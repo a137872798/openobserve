@@ -74,6 +74,9 @@ pub async fn list(org_id: &str) -> Result<Vec<Transform>, anyhow::Error> {
         .collect())
 }
 
+/**
+* 监听function变化
+*/
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/function/";
     let db = &infra_db::CLUSTER_COORDINATOR;
@@ -93,23 +96,31 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let org_id = &item_key[0..item_key.find('/').unwrap()];
                 let item_value: Transform = json::from_slice(&ev.value.unwrap()).unwrap();
+
+                // 表示该function绑定在多个stream上
                 if item_value.streams.is_some() {
                     for stream_fn in item_value.to_stream_transform() {
+
+                        // 也是利用缓存
                         let mut group = STREAM_FUNCTIONS
                             .entry(format!(
                                 "{}/{}/{}",
                                 org_id, stream_fn.stream_type, stream_fn.stream
                             ))
                             .or_insert(StreamFunctionsList { list: vec![] });
+
+                        // 如果已经存在 则替换
                         if group.list.contains(&stream_fn) {
                             let stream_name =
                                 group.list.iter().position(|x| x.eq(&stream_fn)).unwrap();
                             let _ = std::mem::replace(&mut group.list[stream_name], stream_fn);
                         } else {
+                            // 否则直接插入
                             group.list.push(stream_fn);
                         }
                     }
                 } else {
+                    // 代表是公共查询?
                     QUERY_FUNCTIONS.insert(item_key.to_owned(), item_value);
                 }
             }

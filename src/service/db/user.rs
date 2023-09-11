@@ -49,16 +49,19 @@ pub async fn get_db_user(name: &str) -> Result<DBUser, anyhow::Error> {
     Ok(json::from_slice::<DBUser>(&val).unwrap())
 }
 
+// 将用户插入到db中
 pub async fn set(user: DBUser) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = format!("/user/{}", user.email);
+
+    // 调用db api 存储用户信息
     db.put(
         &key,
         json::to_vec(&user).unwrap().into(),
         infra_db::NEED_WATCH,
     )
-    .await?;
-    // cache user
+        .await?;
+    // cache user  将用户信息加入缓存
     for org in user.organizations {
         USERS.insert(
             format!("{}/{}", org.name, user.email),
@@ -90,8 +93,13 @@ pub async fn delete(name: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/**
+ * 监控用户的变化
+ */
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/user/";
+
+    // 返回对应的DB
     let db = &infra_db::CLUSTER_COORDINATOR;
     let mut events = db.watch(key).await?;
     let events = Arc::get_mut(&mut events).unwrap();
@@ -104,6 +112,8 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                 break;
             }
         };
+
+        // 根据监听到的事件同步本地的缓存
         match ev {
             infra_db::Event::Put(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
@@ -194,7 +204,7 @@ mod tests {
                 token: "Abcd".to_string(),
             }],
         })
-        .await;
+            .await;
         assert!(resp.is_ok());
         let _ = cache().await;
 

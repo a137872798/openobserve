@@ -32,28 +32,35 @@ use crate::service::{
     usage::report_request_usage_stats,
 };
 
+/**
+ * 对日志数据进行抽取
+ */
 pub async fn ingest(
-    org_id: &str,
-    in_stream_name: &str,
-    body: web::Bytes,
+    org_id: &str,    // 组织id
+    in_stream_name: &str,  // stream name
+    body: web::Bytes,  // 数据体 或者说json数据
     thread_id: usize,
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
+    // 对一些符号做转换
     let stream_name = &format_stream_name(in_stream_name);
 
+    // 当前节点不是摄取节点  无法接收数据
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Err(anyhow::anyhow!("not an ingester"));
     }
 
+    // 该org被排除在外
     if !db::file_list::BLOCKED_ORGS.is_empty() && db::file_list::BLOCKED_ORGS.contains(&org_id) {
         return Err(anyhow::anyhow!("Quota exceeded for this organization"));
     }
 
-    // check if we are allowed to ingest
+    // check if we are allowed to ingest   该stream已经被删除
     if db::compact::retention::is_deleting_stream(org_id, stream_name, StreamType::Logs, None) {
         return Err(anyhow::anyhow!("stream [{stream_name}] is being deleted"));
     }
 
+    // 代表从中摄取的最小时间戳   距离当前时间超过ingest_allowed_upto的数据不会被摄取
     let mut min_ts =
         (Utc::now() + Duration::hours(CONFIG.limit.ingest_allowed_upto)).timestamp_micros();
 

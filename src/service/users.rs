@@ -33,17 +33,24 @@ use crate::{
     common::utils::auth::{get_hash, is_root_user},
 };
 
+/**
+* 将用户插入表中
+*/
 pub async fn post_user(org_id: &str, usr_req: UserRequest) -> Result<HttpResponse, Error> {
+    // root用户查询 不需要orgId
     let existing_user = if is_root_user(&usr_req.email) {
         db::user::get(None, &usr_req.email).await
     } else {
         db::user::get(Some(org_id), &usr_req.email).await
     };
+
+    // err 代表没查到用户 才是正常情况
     if existing_user.is_err() {
         let salt = Uuid::new_v4().to_string();
         let password = get_hash(&usr_req.password, &salt);
         let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
         let user = usr_req.to_new_dbuser(password, salt, org_id.replace(' ', "_"), token);
+        // 插入用户
         db::user::set(user).await.unwrap();
         Ok(HttpResponse::Ok().json(MetaHttpResponse::message(
             http::StatusCode::OK.into(),

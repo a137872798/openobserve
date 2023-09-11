@@ -20,6 +20,7 @@ use crate::common::{
     meta::StreamType,
 };
 
+// 存储在该cache中str 代表可以删除的文件名
 static CACHE: Lazy<RwHashSet<String>> = Lazy::new(Default::default);
 
 #[inline]
@@ -134,6 +135,9 @@ pub async fn list() -> Result<Vec<String>, anyhow::Error> {
     Ok(items)
 }
 
+/**
+* 监听压缩事件   也是同步缓存
+*/
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/compact/delete/";
     let db = &infra_db::CLUSTER_COORDINATOR;

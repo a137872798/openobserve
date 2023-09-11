@@ -78,6 +78,9 @@ pub fn get_or_create(
     MANAGER.get_or_create(thread_id, stream, partition_time_level, key, use_cache)
 }
 
+/*
+ 检查文件是否在使用中
+ */
 pub fn check_in_use(
     org_id: &str,
     stream_name: &str,
@@ -170,25 +173,32 @@ impl Manager {
         }
     }
 
+    /*
+    查看某个线程此时正在写入的文件
+     */
     pub fn get(
         &self,
         thread_id: usize,
         org_id: &str,
         stream_name: &str,
         stream_type: StreamType,
-        key: &str,
+        key: &str,  // 用于匹配的标识
     ) -> Option<Arc<RwFile>> {
         let full_key = format!("{org_id}/{stream_type}/{stream_name}/{key}");
+        // thread_id 可以理解为vec的下标
         let manager = self.data.get(thread_id).unwrap().read().unwrap();
+
+        // 获取文件
         let file = match manager.get(&full_key) {
             Some(file) => file.clone(),
             None => {
                 return None;
             }
         };
+        // 释放锁
         drop(manager);
 
-        // check size & ttl
+        // check size & ttl  检查是否需要刷盘
         if file.size() >= (CONFIG.limit.max_file_size_on_disk as i64)
             || file.expired() <= chrono::Utc::now().timestamp()
         {
@@ -254,6 +264,9 @@ impl Manager {
         }
     }
 
+    /*
+    检查某文件是否在使用中
+     */
     pub fn check_in_use(
         &self,
         org_id: &str,
@@ -261,9 +274,11 @@ impl Manager {
         stream_type: StreamType,
         file_name: &str,
     ) -> bool {
+        // 将文件名打散  第一个是线程id
         let columns = file_name.split('/').collect::<Vec<&str>>();
         let thread_id: usize = columns.first().unwrap().parse().unwrap();
         let key = columns[1..columns.len() - 1].join("/");
+        // 查看该线程是否还在使用该文件
         if let Some(file) = self.get(thread_id, org_id, stream_name, stream_type, &key) {
             if file.name() == file_name {
                 return true;

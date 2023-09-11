@@ -25,21 +25,31 @@ use crate::service::db::file_list;
 
 pub struct Eventer;
 
+
 #[tonic::async_trait]
 impl Event for Eventer {
+
+    /**
+    * 接收其他节点发送的告知文件列表的请求
+    */
     async fn send_file_list(
         &self,
         req: Request<FileList>,
     ) -> Result<Response<EmptyResponse>, Status> {
         let start = std::time::Instant::now();
+
+        // tracing 的先忽略
         let parent_cx = global::get_text_map_propagator(|prop| {
             prop.extract(&super::MetadataMap(req.metadata()))
         });
         tracing::Span::current().set_parent(parent_cx);
 
         let req = req.get_ref();
+
+        // 遍历每个文件信息
         for file in req.items.iter() {
             // log::info!("received event:file {:?}", file);
+            // 感觉是要进行文件的同步
             if let Err(e) = file_list::progress(
                 &file.key,
                 FileMeta::from(file.meta.as_ref().unwrap()),

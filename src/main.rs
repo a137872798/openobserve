@@ -121,15 +121,15 @@ async fn main() -> Result<(), anyhow::Error> {
     );
 
     // init jobs
-    // it must be initialized before the server starts
+    // it must be initialized before the server starts  将当前节点注册到集群 并发出心跳请求 完成节点上线 (心跳请求成功就是上线)
     cluster::register_and_keepalive()
         .await
         .expect("cluster init failed");
-    // init ider
+    // init ider  该对象用于生成唯一id  init会产生一个初始id
     ider::init();
-    // init wal
+    // init wal   wal write-ahead-log 防止写入丢失的   目前只是触发Vec/HashMap的初始化
     wal::init();
-    // init job
+    // init job  job模块,监控各种任务 这里进行的初始化工作就比较多
     job::init().await.expect("job init failed");
 
     // gRPC server

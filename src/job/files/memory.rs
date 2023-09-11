@@ -29,6 +29,9 @@ use crate::service::{
     db, schema::schema_evolution, search::datafusion::new_writer, usage::report_compression_stats,
 };
 
+/**
+* 有关内存要执行的定时任务
+*/
 pub async fn run() -> Result<(), anyhow::Error> {
     if !CONFIG.common.wal_memory_mode_enabled {
         return Ok(());

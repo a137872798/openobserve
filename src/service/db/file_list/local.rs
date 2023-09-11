@@ -63,7 +63,11 @@ pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow:
     Ok(())
 }
 
+/**
+* node_uuid: 如果为空 代表是本地节点
+*/
 pub async fn broadcast_cache(node_uuid: Option<String>) -> Result<(), anyhow::Error> {
+    // 集群中每个节点在感知到其他节点上线时 会将本地文件信息发送过去  如果是本节点启动 则是将节点信息发往集群其他节点
     let files = file_list::list().await?;
     if files.is_empty() {
         return Ok(());

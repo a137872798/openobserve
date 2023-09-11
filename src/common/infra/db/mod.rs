@@ -52,10 +52,13 @@ pub fn default() -> Box<dyn Db> {
     }
 }
 
+/**
+* 初始化元数据数据库
+*/
 pub async fn create_table() -> Result<()> {
-    // check db dir
+    // check db dir   初始化存储数据文件的目录 默认 ./data/openobserve/db/
     std::fs::create_dir_all(&CONFIG.common.data_db_dir)?;
-    // create for cluster_coordinator
+    // create for cluster_coordinator   单机模式 在sqlite上创建各种相关表
     if CONFIG.common.local_mode {
         sqlite::create_table().await?;
     }
@@ -70,6 +73,8 @@ pub async fn create_table() -> Result<()> {
 }
 
 pub fn cluster_coordinator() -> Box<dyn Db> {
+
+    // 单机模式的话 可以不借助etcd来存储
     if CONFIG.common.local_mode {
         match CONFIG.common.meta_store.as_str().into() {
             MetaStore::Sled => Box::<sled::SledDb>::default(),
@@ -80,14 +85,22 @@ pub fn cluster_coordinator() -> Box<dyn Db> {
     }
 }
 
+/**
+* 描述存储元数据的特征
+*/
 #[async_trait]
 pub trait Db: Sync + Send + 'static {
+
+    // 总计有多少数据
     async fn stats(&self) -> Result<Stats>;
+    // 数据以字节流形式存储
     async fn get(&self, key: &str) -> Result<Bytes>;
+    // 将某个kv 存储到db中 并设置是否监听变化的标识
     async fn put(&self, key: &str, value: Bytes, need_watch: bool) -> Result<()>;
+    // 删除某个key下所有数据 支持前缀匹配
     async fn delete(&self, key: &str, with_prefix: bool, need_watch: bool) -> Result<()>;
 
-    /// Contrary to `delete`, this call won't fail if `key` is missing.
+    /// Contrary to `delete`, this call won't fail if `key` is missing.   忽略掉key不存在导致的Err
     async fn delete_if_exists(&self, key: &str, with_prefix: bool, need_watch: bool) -> Result<()> {
         use crate::common::infra::errors::{DbError, Error};
 
@@ -97,10 +110,13 @@ pub trait Db: Sync + Send + 'static {
         }
     }
 
+    // 列举指定key匹配的所有数据
     async fn list(&self, prefix: &str) -> Result<HashMap<String, Bytes>>;
+    // 仅展示key
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>>;
     async fn list_values(&self, prefix: &str) -> Result<Vec<Bytes>>;
     async fn count(&self, prefix: &str) -> Result<i64>;
+    // 监听前缀 并得到一个监听流
     async fn watch(&self, prefix: &str) -> Result<Arc<mpsc::Receiver<Event>>>;
 }
 

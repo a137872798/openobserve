@@ -38,6 +38,7 @@ pub fn put_file_contents(file: &str, contents: &[u8]) -> Result<(), std::io::Err
     Ok(())
 }
 
+// 扫描目录 记录所有出现的文件
 #[inline(always)]
 pub fn scan_files(root_dir: &str) -> Vec<String> {
     walkdir::WalkDir::new(root_dir)
@@ -48,6 +49,7 @@ pub fn scan_files(root_dir: &str) -> Vec<String> {
         .collect()
 }
 
+// 从该目录开始 清除空的子目录
 pub fn clean_empty_dirs(dir: &str) -> Result<(), std::io::Error> {
     let mut dirs = Vec::new();
     for entry in walkdir::WalkDir::new(dir) {
@@ -59,9 +61,11 @@ pub fn clean_empty_dirs(dir: &str) -> Result<(), std::io::Error> {
             dirs.push(entry.path().to_str().unwrap().to_string());
         }
     }
+    // 找到所有子目录
     dirs.sort_by_key(|b| std::cmp::Reverse(b.len()));
     for dir in dirs {
         if let Ok(entries) = std::fs::read_dir(&dir) {
+            // 移除空目录
             if entries.count() == 0 {
                 std::fs::remove_dir(&dir)?;
             }

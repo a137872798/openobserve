@@ -361,6 +361,9 @@ pub async fn keepalive_connection() -> Result<()> {
     Ok(())
 }
 
+/**
+ * 保持续约
+ */
 pub async fn keepalive_lease_id<F>(id: i64, ttl: i64, stopper: F) -> Result<()>
 where
     F: Fn() -> bool,

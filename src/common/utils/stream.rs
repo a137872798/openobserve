@@ -68,10 +68,13 @@ pub fn get_file_name_v1(org_id: &str, stream_name: &str, suffix: u32) -> String 
     )
 }
 
+/*
+填充文件元数据
+ */
 pub async fn populate_file_meta(
-    schema: Arc<Schema>,
-    batch: Vec<Vec<RecordBatch>>,
-    file_meta: &mut FileMeta,
+    schema: Arc<Schema>,   // 描述内存格式
+    batch: Vec<Vec<RecordBatch>>,  // 写入的数据 已经经过压缩
+    file_meta: &mut FileMeta,  // 原文件描述符
 ) -> Result<(), anyhow::Error> {
     if schema.fields().is_empty() || batch.is_empty() {
         return Ok(());

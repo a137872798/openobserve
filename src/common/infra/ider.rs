@@ -19,6 +19,7 @@ use std::iter;
 
 use super::cluster;
 
+// 由第三方库提供雪花算法
 static mut IDER: Lazy<SnowflakeIdGenerator> =
     Lazy::new(|| unsafe { SnowflakeIdGenerator::new(1, cluster::LOCAL_NODE_ID) });
 

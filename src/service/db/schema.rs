@@ -295,6 +295,9 @@ pub async fn list(
         .collect())
 }
 
+/**
+* 监听schema数据的变化
+*/
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/schema/";
     let db = &infra_db::CLUSTER_COORDINATOR;
@@ -310,15 +313,24 @@ pub async fn watch() -> Result<(), anyhow::Error> {
             }
         };
         match ev {
+            // 发现插入了新的schema
             infra_db::Event::Put(ev) => {
+
+                // 去掉 schema 前缀
                 let item_key = ev.key.strip_prefix(key).unwrap();
+
+                // 也是将字段同步到缓存
                 let item_value: Vec<Schema> = json::from_slice(&ev.value.unwrap()).unwrap();
                 STREAM_SCHEMAS.insert(item_key.to_owned(), item_value.clone());
+                // 得到后面的部分
                 let keys = item_key.split('/').collect::<Vec<&str>>();
+
+                // 拆分出来的3部分 精确到stream类型和name
                 let org_id = keys[0];
                 let stream_type = StreamType::from(keys[1]);
                 let stream_name = keys[2];
 
+                // TODO
                 if stream_type.eq(&StreamType::EnrichmentTables) {
                     ENRICHMENT_TABLES.insert(
                         item_key.to_owned(),
@@ -332,12 +344,16 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                     );
                 }
             }
+
+            // 删除某个schema
             infra_db::Event::Delete(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let columns = item_key.split('/').collect::<Vec<&str>>();
                 let org_id = columns[0];
                 let stream_type = StreamType::from(columns[1]);
                 let stream_name = columns[2];
+
+                // 同步缓存
                 STREAM_SCHEMAS.remove(item_key);
                 cache::stats::remove_stream_stats(org_id, stream_name, stream_type);
                 if let Err(e) =
@@ -346,6 +362,7 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                     log::error!("del_offset: {}", e);
                 }
 
+                // 移除对应的数据
                 if stream_type.eq(&StreamType::EnrichmentTables) && is_local_disk_storage() {
                     let data_dir = format!(
                         "{}files/{org_id}/{stream_type}/{stream_name}",

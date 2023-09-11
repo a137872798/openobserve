@@ -20,11 +20,15 @@ use crate::common::{
 mod disk;
 mod memory;
 
+/**
+* 有关数据文件的后台任务
+*/
 pub async fn run() -> Result<(), anyhow::Error> {
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(()); // not an ingester, no need to init job
     }
 
+    // 只有写入数据的节点才需要执行
     tokio::task::spawn(async move { disk::run().await });
     tokio::task::spawn(async move { memory::run().await });
 

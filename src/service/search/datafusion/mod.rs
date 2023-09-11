@@ -72,12 +72,18 @@ pub const DEFAULT_FUNCTIONS: [ZoFunction; 6] = [
     },
 ];
 
+
+/*
+ 创建一个可以生成arrow格式的writer对象
+ */
 pub fn new_writer<'a>(
     buf: &'a mut Vec<u8>,
     schema: &'a Arc<Schema>,
     sort_field: Option<&str>,
     bf_fields: Option<Vec<&str>>,
 ) -> ArrowWriter<&'a mut Vec<u8>> {
+
+    // 默认基于timestamp排序
     let sort_column_id = if let Some(v) = sort_field {
         schema.index_of(v).unwrap()
     } else {
@@ -91,6 +97,7 @@ pub fn new_writer<'a>(
         .set_sorting_columns(Some(
             [SortingColumn::new(sort_column_id as i32, true, false)].to_vec(),
         ));
+    // TODO
     if let Some(fields) = bf_fields {
         for field in fields {
             writer_props = writer_props

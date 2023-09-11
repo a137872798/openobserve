@@ -46,14 +46,20 @@ pub fn connect() -> Box<dyn FileList> {
     }
 }
 
+// 这是一个文件管理系统的特征对象
 #[async_trait]
 pub trait FileList: Sync + Send + 'static {
+    // 添加新文件
     async fn add(&self, file: &str, meta: &FileMeta) -> Result<()>;
+    // 移除文件
     async fn remove(&self, file: &str) -> Result<()>;
+    // 批量添加文件
     async fn batch_add(&self, files: &[FileKey]) -> Result<()>;
+    // 批量移除文件
     async fn batch_remove(&self, files: &[String]) -> Result<()>;
     async fn get(&self, file: &str) -> Result<FileMeta>;
     async fn contains(&self, file: &str) -> Result<bool>;
+    // 列举所有文件
     async fn list(&self) -> Result<Vec<(String, FileMeta)>>;
     async fn query(
         &self,
@@ -142,6 +148,7 @@ pub async fn contains(file: &str) -> Result<bool> {
     CLIENT.contains(file).await
 }
 
+// 列举所有文件
 #[inline]
 pub async fn list() -> Result<Vec<(String, FileMeta)>> {
     CLIENT.list().await

@@ -29,9 +29,11 @@ use crate::common::{
 use crate::service::db;
 
 static LOCAL_NODE_KEY_TTL: i64 = 10; // node ttl, seconds
+// 续约id 跟etcd有关 估计是某一任期中每个节点的续约标识吧  当发生新的选举工作后 就需要更新续约id
 static mut LOCAL_NODE_KEY_LEASE_ID: i64 = 0;
 static mut LOCAL_NODE_STATUS: NodeStatus = NodeStatus::Prepare;
 
+// 对应本节点id
 pub static mut LOCAL_NODE_ID: i32 = 0;
 pub static LOCAL_NODE_UUID: Lazy<String> = Lazy::new(load_local_node_uuid);
 pub static LOCAL_NODE_ROLE: Lazy<Vec<Role>> = Lazy::new(load_local_node_role);
@@ -49,11 +51,12 @@ pub struct Node {
     pub status: NodeStatus,
 }
 
+// 描述本节点当前状态
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum NodeStatus {
     Prepare,
     Online,
-    Offline,
+    Offline,  // 本节点被标记成下线状态 甚至会暂停心跳任务 与集群断开
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -106,14 +109,17 @@ pub async fn register_and_keepalive() -> Result<()> {
         NODES.insert(LOCAL_NODE_UUID.clone(), load_local_mode_node());
         return Ok(());
     }
+
+    // 此时完成了本节点到集群的注册工作
     if let Err(e) = register().await {
         log::error!("[CLUSTER] Register to cluster failed: {}", e);
         return Err(e);
     }
 
-    // keep alive
+    // keep alive  现在开始创建心跳任务 需要能让集群观测到本节点
     tokio::task::spawn(async move {
         loop {
+            // 当本节点变成下线状态后 就会停止发送心跳
             if is_offline() {
                 break;
             }
@@ -122,8 +128,12 @@ pub async fn register_and_keepalive() -> Result<()> {
             if ret.is_ok() {
                 break;
             }
+
+            // 代表在etcd上续约失败
             let e = ret.unwrap_err();
             let estr = e.to_string();
+
+            // 如果已经下线就不需要处理了  或者返回跟续约无关的异常
             if is_offline()
                 || estr
                     != Error::from(etcd_client::Error::LeaseKeepAliveError(
@@ -134,7 +144,7 @@ pub async fn register_and_keepalive() -> Result<()> {
                 break;
             }
             log::error!("[CLUSTER] keepalive lease id expired or revoked, set node online again.");
-            // get new lease id
+            // get new lease id   获取一个新的续约id  此时也相当于发送了一次心跳
             let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
             let resp = match client.lease_grant(LOCAL_NODE_KEY_TTL, None).await {
                 Ok(resp) => resp,
@@ -148,6 +158,8 @@ pub async fn register_and_keepalive() -> Result<()> {
             unsafe {
                 LOCAL_NODE_KEY_LEASE_ID = id;
             }
+
+            // 将节点更新成上线状态
             if let Err(e) = set_online().await {
                 log::error!("[CLUSTER] set node online failed: {}", e);
                 continue;
@@ -182,7 +194,7 @@ pub async fn register() -> Result<()> {
             break;
         }
     }
-    // update local id
+    // update local id  设置本地节点id
     unsafe {
         LOCAL_NODE_ID = node_id;
     }
@@ -199,21 +211,24 @@ pub async fn register() -> Result<()> {
         cpu_num: CONFIG.limit.cpu_num as u64,
         status: NodeStatus::Prepare,
     };
-    // cache local node
+    // cache local node   把节点信息插入到map中
     NODES.insert(LOCAL_NODE_UUID.clone(), val.clone());
     let val = json::to_string(&val).unwrap();
     // register node to cluster
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
+    // 有关跟etcd交互的逻辑先忽略
     let resp = client.lease_grant(LOCAL_NODE_KEY_TTL, None).await?;
     let id = resp.id();
     // update local node key lease id
     unsafe {
         LOCAL_NODE_KEY_LEASE_ID = id;
     }
+
+    // 这个续约id 像是一个门票?
     let opt = PutOptions::new().with_lease(id);
     let _resp = client.put(key, val, Some(opt)).await?;
 
-    // 5. watch node list
+    // 5. watch node list  开启异步任务监听
     tokio::task::spawn(async move { watch_node_list().await });
 
     // 7. register ok, release lock
@@ -223,7 +238,7 @@ pub async fn register() -> Result<()> {
     Ok(())
 }
 
-/// set online to cluster
+/// set online to cluster 申请在集群上线
 pub async fn set_online() -> Result<()> {
     if CONFIG.common.local_mode {
         return Ok(());
@@ -256,6 +271,7 @@ pub async fn set_online() -> Result<()> {
     NODES.insert(LOCAL_NODE_UUID.clone(), val.clone());
     let val = json::to_string(&val).unwrap();
 
+    // 将上线状态推送到etcd 这样会触发监听器
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
     let key = format!("{}nodes/{}", &CONFIG.etcd.prefix, *LOCAL_NODE_UUID);
     let opt = PutOptions::new().with_lease(unsafe { LOCAL_NODE_KEY_LEASE_ID });
@@ -281,6 +297,9 @@ pub async fn leave() -> Result<()> {
     Ok(())
 }
 
+/**
+ * 返回集群中满足条件的所有节点
+ */
 pub fn get_cached_nodes(cond: fn(&Node) -> bool) -> Option<Vec<Node>> {
     if NODES.is_empty() {
         return None;
@@ -316,6 +335,7 @@ pub fn get_cached_online_query_nodes() -> Option<Vec<Node>> {
     })
 }
 
+// 获取内部grpc调用所需要的token
 #[inline]
 pub fn get_internal_grpc_token() -> String {
     if CONFIG.grpc.internal_grpc_token.is_empty() {
@@ -325,7 +345,7 @@ pub fn get_internal_grpc_token() -> String {
     }
 }
 
-/// List nodes from cluster or local cache
+/// List nodes from cluster or local cache    加载该路径下所有目录
 pub async fn list_nodes() -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
@@ -344,13 +364,20 @@ pub async fn list_nodes() -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
+/**
+ * 监听集群节点
+ */
 async fn watch_node_list() -> Result<()> {
+    // 描述存储集群信息的组件
     let db = &super::db::CLUSTER_COORDINATOR;
     let key = "/nodes/";
+
+    // 监听nodes的变化 并产生一个事件流  跟ZK的套路一毛一样
     let mut events = db.watch(key).await?;
     let events = Arc::get_mut(&mut events).unwrap();
     log::info!("Start watching node_list");
     loop {
+        // 因为这是一个tokio的异步任务  所以并不会真正阻塞线程
         let ev = match events.recv().await {
             Some(ev) => ev,
             None => {
@@ -359,7 +386,9 @@ async fn watch_node_list() -> Result<()> {
             }
         };
         match ev {
+            // 感知到该节点下的数据插入事件
             Event::Put(ev) => {
+                // 将变化同步到本地
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value: Node = json::from_slice(&ev.value.unwrap()).unwrap();
                 log::info!("[CLUSTER] join {:?}", item_value.clone());
@@ -367,6 +396,7 @@ async fn watch_node_list() -> Result<()> {
                 // The ingester need broadcast local file list to the new node
                 // -- 1. broadcast to the node prepare
                 // -- 2. broadcast to the node online (only itself)
+                // 代表是一个数据摄取节点
                 if is_ingester(&LOCAL_NODE_ROLE)
                     && (item_value.status.eq(&NodeStatus::Prepare)
                         || (item_value.status.eq(&NodeStatus::Online)
@@ -378,6 +408,8 @@ async fn watch_node_list() -> Result<()> {
                     } else {
                         Some(item_key.to_string())
                     };
+
+                    // 当感知到其他节点处于准备阶段 或者本节点完成启动 发出一个缓存通知 让各节点将某个(些)file数据加载到内存中
                     tokio::task::spawn(async move {
                         if let Err(e) = db::file_list::local::broadcast_cache(notice_uuid).await {
                             log::error!("[CLUSTER] broadcast file_list error: {}", e);
@@ -385,6 +417,7 @@ async fn watch_node_list() -> Result<()> {
                     });
                 }
             }
+            // 感知到节点删除的话 将变化同步到本地map
             Event::Delete(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value = NODES.get(item_key).unwrap().clone();

@@ -32,12 +32,17 @@ pub static DELETED_FILES: Lazy<RwHashMap<String, FileMeta>> =
 pub static BLOCKED_ORGS: Lazy<Vec<&str>> =
     Lazy::new(|| CONFIG.compact.blocked_orgs.split(',').collect());
 
+/**
+* 从其他服务器拉取文件数据
+*/
 pub async fn progress(
     key: &str,
     data: FileMeta,
     delete: bool,
     download: bool,
 ) -> Result<(), anyhow::Error> {
+
+    // 代表删除文件
     if delete {
         if let Err(e) = file_list::remove(key).await {
             log::error!(
@@ -54,6 +59,8 @@ pub async fn progress(
                 e
             );
         }
+
+        // 代表需要将文件数据下载到本地
         if download
             && CONFIG.memory_cache.cache_latest_files
             && cluster::is_querier(&cluster::LOCAL_NODE_ROLE)

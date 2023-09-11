@@ -53,6 +53,8 @@ pub const PARQUET_PAGE_SIZE: usize = 1024 * 1024;
 pub const PARQUET_MAX_ROW_GROUP_SIZE: usize = 1024 * 1024;
 
 pub static CONFIG: Lazy<Config> = Lazy::new(init);
+
+// 缓存实例id
 pub static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 
 pub static TELEMETRY_CLIENT: Lazy<segment::HttpClient> = Lazy::new(|| {

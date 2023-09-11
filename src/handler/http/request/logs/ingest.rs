@@ -110,14 +110,17 @@ pub async fn multi(
 )]
 #[post("/{org_id}/{stream_name}/_json")]
 pub async fn json(
-    path: web::Path<(String, String)>,
-    body: web::Bytes,
+    path: web::Path<(String, String)>,   // path中包含的是占位符
+    body: web::Bytes,    // 数据体
     thread_id: web::Data<usize>,
 ) -> Result<HttpResponse, Error> {
     let (org_id, stream_name) = path.into_inner();
     Ok(
+        // 将相关参数传入 logs对其进行抽取 其中会触发stream关联的function
         match logs::json::ingest(&org_id, &stream_name, body, **thread_id).await {
+            // 当处理完毕后才返回
             Ok(v) => HttpResponse::Ok().json(v),
+            // 返回错误信息
             Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
                 e.to_string(),

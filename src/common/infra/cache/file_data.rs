@@ -24,6 +24,7 @@ use crate::common::infra::storage;
 
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
 
+// 将文件数据缓存在内存中
 pub struct FileData {
     max_size: usize,
     cur_size: usize,
@@ -136,6 +137,7 @@ pub fn exist(file: &str) -> bool {
     files.get(file).is_some()
 }
 
+// 将数据存储在内存中
 #[inline]
 pub fn set(file: &str, data: Bytes) -> Result<(), anyhow::Error> {
     if !CONFIG.memory_cache.enabled {
@@ -157,9 +159,11 @@ pub fn len() -> usize {
     files.data.len()
 }
 
+// 根据filekey的信息 下载文件
 #[inline]
 pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
     let data = storage::get(file).await?;
+    // 将数据存储到内存中
     if let Err(e) = set(file, data.clone()) {
         return Err(anyhow::anyhow!(
             "set file {} to memory cache failed: {}",

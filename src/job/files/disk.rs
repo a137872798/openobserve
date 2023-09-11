@@ -33,11 +33,15 @@ use crate::service::{
     db, schema::schema_evolution, search::datafusion::new_writer, usage::report_compression_stats,
 };
 
+/**
+* 有关磁盘要执行的定期任务
+*/
 pub async fn run() -> Result<(), anyhow::Error> {
     let mut interval = time::interval(time::Duration::from_secs(CONFIG.limit.file_push_interval));
     interval.tick().await; // trigger the first run
     loop {
         interval.tick().await;
+        // 定期将文件移动到外部存储
         if let Err(e) = move_files_to_storage().await {
             log::error!("Error moving disk files to remote: {}", e);
         }
@@ -45,18 +49,21 @@ pub async fn run() -> Result<(), anyhow::Error> {
 }
 
 /*
- * upload compressed files to storage & delete moved files from local
+ * upload compressed files to storage & delete moved files from local 将数据从本地上传到外部存储
  */
 async fn move_files_to_storage() -> Result<(), anyhow::Error> {
+    // 找到wal日志存储目录
     let wal_dir = Path::new(&CONFIG.common.data_wal_dir)
         .canonicalize()
         .unwrap();
 
     let pattern = format!("{}files/", &CONFIG.common.data_wal_dir);
+    // 得到所有扫描到的目录
     let files = scan_files(&pattern);
 
     // use multiple threads to upload files
     let mut tasks = Vec::new();
+    // 这是进行数据搬运的线程
     let semaphore = std::sync::Arc::new(Semaphore::new(CONFIG.limit.file_move_thread_num));
     for file in files {
         let local_file = file.to_owned();
@@ -67,6 +74,8 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             .to_str()
             .unwrap()
             .replace('\\', "/");
+
+        // 截出5个部分
         let columns = file_path.splitn(5, '/').collect::<Vec<&str>>();
 
         // eg: files/default/logs/olympics/0/2023/08/21/08/8b8a5451bbe1c44b/7099303408192061440f3XQ2p.json
@@ -82,14 +91,14 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             file_name = file_name.replace('_', "/");
         }
 
-        // check the file is using for write
+        // check the file is using for write  跳过还在写入的文件
         if wal::check_in_use(&org_id, &stream_name, stream_type, &file_name) {
             // println!("file is using for write, skip, {}", file_name);
             continue;
         }
         log::info!("[JOB] convert disk file: {}", file);
 
-        // check if we are allowed to ingest or just delete the file
+        // check if we are allowed to ingest or just delete the file  这是一个特殊的缓存 表示可以删除文件
         if db::compact::retention::is_deleting_stream(&org_id, &stream_name, stream_type, None) {
             log::info!(
                 "[JOB] the stream [{}/{}/{}] is deleting, just delete file: {}",
@@ -98,6 +107,7 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
                 &stream_name,
                 file
             );
+            // 删除文件
             if let Err(e) = fs::remove_file(&local_file) {
                 log::error!(
                     "[JOB] Failed to remove disk file from disk: {}, {}",
@@ -108,8 +118,11 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             continue;
         }
 
+        // 开始搬运数据
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let task: task::JoinHandle<Result<(), anyhow::Error>> = task::spawn(async move {
+
+            // 开始传输文件
             let ret =
                 upload_file(&org_id, &stream_name, stream_type, &local_file, &file_name).await;
             if let Err(e) = ret {
@@ -164,6 +177,9 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/*
+将文件传输到 object_store
+ */
 async fn upload_file(
     org_id: &str,
     stream_name: &str,
@@ -176,6 +192,7 @@ async fn upload_file(
     let file_size = file_meta.len();
     log::info!("[JOB] File upload begin: disk: {}", path_str);
     if file_size == 0 {
+        // 忽略无效文件
         if let Err(e) = fs::remove_file(path_str) {
             log::error!(
                 "[JOB] Failed to remove disk file from disk: {}, {}",
@@ -186,18 +203,21 @@ async fn upload_file(
         return Err(anyhow::anyhow!("file is empty: {}", path_str));
     }
 
-    // metrics
+    // metrics   TODO
     metrics::INGEST_WAL_READ_BYTES
         .with_label_values(&[org_id, stream_name, stream_type.to_string().as_str()])
         .inc_by(file_size);
 
     let mut res_records: Vec<json::Value> = vec![];
     let mut schema_reader = BufReader::new(&file);
+
+    // 从文件格式反推出schema
     let inferred_schema = match infer_json_schema_from_seekable(&mut schema_reader, None) {
         Ok(inferred_schema) => {
             drop(schema_reader);
             inferred_schema
         }
+        // 文件格式有问题
         Err(err) => {
             // File has some corrupt json data....ignore such data & move rest of the records
             log::error!(
@@ -227,11 +247,15 @@ async fn upload_file(
             arrow::json::reader::infer_json_schema_from_iterator(value_iter).unwrap()
         }
     };
+
+    // 生成schema对象
     let arrow_schema = Arc::new(inferred_schema);
 
+    // 记录已经写入的数据
     let mut meta_batch = vec![];
     let mut buf_parquet = Vec::new();
 
+    // TODO
     let bf_fields =
         if CONFIG.common.traces_bloom_filter_enabled && stream_type == StreamType::Traces {
             Some(vec![COLUMN_TRACE_ID])
@@ -240,18 +264,22 @@ async fn upload_file(
         };
     let mut writer = new_writer(&mut buf_parquet, &arrow_schema, None, bf_fields);
 
+    // 这是正常情况 代表json格式是有效的  往OO中写入的数据文件 基本都是json格式   arrow-json包具备 json<->arrow之间的转换能力
     if res_records.is_empty() {
         file.seek(SeekFrom::Start(0)).unwrap();
         let json_reader = BufReader::new(&file);
         let json = ReaderBuilder::new(arrow_schema.clone())
             .build(json_reader)
             .unwrap();
+
+        // RecordBatch对应一批数据(多行数据)  然后每行包含多列
         for batch in json {
             let batch_write = batch.unwrap();
             writer.write(&batch_write).expect("Write batch succeeded");
             meta_batch.push(batch_write);
         }
     } else {
+        // TODO
         let mut json = vec![];
         let mut decoder = ReaderBuilder::new(arrow_schema.clone()).build_decoder()?;
 
@@ -275,9 +303,10 @@ async fn upload_file(
         max_ts: 0,
         records: 0,
         original_size: file_size as i64,
-        compressed_size: buf_parquet.len() as i64,
+        compressed_size: buf_parquet.len() as i64,  // 写入的数据会存储在该容器中  并且在按照parquet写入时 会针对同列自动压缩
     };
 
+    // 填充文件元数据
     populate_file_meta(arrow_schema.clone(), vec![meta_batch], &mut file_meta).await?;
 
     schema_evolution(
