@@ -35,8 +35,12 @@ static mut LOCAL_NODE_STATUS: NodeStatus = NodeStatus::Prepare;
 pub static mut LOCAL_NODE_ID: i32 = 0;
 pub static LOCAL_NODE_UUID: Lazy<String> = Lazy::new(load_local_node_uuid);
 pub static LOCAL_NODE_ROLE: Lazy<Vec<Role>> = Lazy::new(load_local_node_role);
+// 维护集群中所有节点
 static NODES: Lazy<RwHashMap<String, Node>> = Lazy::new(Default::default);
 
+/**
+* 代表集群中节点的信息
+*/
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: i32,
@@ -96,9 +100,13 @@ impl std::fmt::Display for Role {
 }
 
 /// Register and keepalive the node to cluster
+/// 集群模块 在OO服务器启动前 需要先注册到集群中
 pub async fn register_and_keepalive() -> Result<()> {
+
+    // 代表采用单机模式
     if CONFIG.common.local_mode {
         let roles = load_local_node_role();
+        // 单机模式如果该节点不包含全部角色就没有意义了
         if !is_single_node(&roles) {
             panic!("For local mode only single node deployment is allowed!");
         }
@@ -106,6 +114,8 @@ pub async fn register_and_keepalive() -> Result<()> {
         NODES.insert(LOCAL_NODE_UUID.clone(), load_local_mode_node());
         return Ok(());
     }
+
+    // 注册到集群
     if let Err(e) = register().await {
         log::error!("[CLUSTER] Register to cluster failed: {}", e);
         return Err(e);
@@ -159,22 +169,26 @@ pub async fn register_and_keepalive() -> Result<()> {
 }
 
 /// Register to cluster
+/// 将本节点注册到集群
 pub async fn register() -> Result<()> {
-    // 1. create a cluster lock for node register
+    // 1. create a cluster lock for node register   获取分布式锁
     let mut locker = etcd::Locker::new("nodes/register");
     locker.lock(0).await?;
 
-    // 2. get node list
+    // 2. get node list   获取当前集群中所有节点
     let node_list = list_nodes().await?;
 
-    // 3. calculate node_id
+    // 3. calculate node_id  基于当前集群中节点id 计算新节点id
     let mut node_id = 1;
+
     let mut node_ids = Vec::new();
     for node in node_list {
         node_ids.push(node.id);
         NODES.insert(node.uuid.clone(), node);
     }
     node_ids.sort();
+
+    // 通过自增来检测碰撞  因为现在还持有分布式锁 所以不会有冲突问题
     for id in &node_ids {
         if *id == node_id {
             node_id += 1;
@@ -326,6 +340,7 @@ pub fn get_internal_grpc_token() -> String {
 }
 
 /// List nodes from cluster or local cache
+/// 访问etcd 获取nodes路径的信息 也就是当前存在多少节点
 pub async fn list_nodes() -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
@@ -398,6 +413,9 @@ async fn watch_node_list() -> Result<()> {
     Ok(())
 }
 
+/**
+ * 基于本地模式
+ */
 #[inline(always)]
 pub fn load_local_mode_node() -> Node {
     Node {
@@ -445,6 +463,9 @@ pub fn get_local_node_ip() -> String {
     String::new()
 }
 
+/**
+* 从配置项中读取角色信息 并拆分
+*/
 #[inline(always)]
 pub fn load_local_node_role() -> Vec<Role> {
     CONFIG

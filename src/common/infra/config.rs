@@ -113,6 +113,9 @@ pub struct Config {
     pub profiling: Pyroscope,
 }
 
+/**
+ * 暴露给grafana的地址/端口
+ */
 #[derive(EnvConfig)]
 pub struct Pyroscope {
     #[env_config(

@@ -81,8 +81,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+// OO的启动入口
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+
+    // TODO 代表在条件编译下开启了profiling选项 会将自身指标信息给grafana
     #[cfg(feature = "profiling")]
     let agent = PyroscopeAgent::builder(
         &CONFIG.profiling.pyroscope_server_url,
@@ -95,10 +98,12 @@ async fn main() -> Result<(), anyhow::Error> {
     #[cfg(feature = "profiling")]
     let agent_running = agent.start().expect("Failed to start pyroscope agent");
 
+    // 如果处理命令行执行成功 提前返回
     if cli().await? {
         return Ok(());
     }
 
+    // TODO 先忽略日志
     if CONFIG.log.events_enabled {
         let logger = ZoLogger {
             sender: EVENT_SENDER.clone(),
@@ -113,6 +118,7 @@ async fn main() -> Result<(), anyhow::Error> {
     } else {
         env_logger::init_from_env(env_logger::Env::new().default_filter_or(&CONFIG.log.level));
     }
+
     log::info!("Starting OpenObserve {}", VERSION);
     log::info!(
         "System info: CPU cores {}, MEM total {} MB",
@@ -122,6 +128,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // init jobs
     // it must be initialized before the server starts
+    // 在启动服务前 必须先启动这个
     cluster::register_and_keepalive()
         .await
         .expect("cluster init failed");
@@ -304,6 +311,9 @@ fn enable_tracing() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/**
+ * 读取并处理命令行
+ */
 async fn cli() -> Result<bool, anyhow::Error> {
     let app = clap::Command::new("openobserve")
         .version(env!("GIT_VERSION"))
@@ -348,10 +358,12 @@ async fn cli() -> Result<bool, anyhow::Error> {
         ])
         .get_matches();
 
+    // 尝试解析得到匹配的命令
     if app.subcommand().is_none() {
         return Ok(false);
     }
 
+    // 非启动命令先忽略
     let (name, command) = app.subcommand().unwrap();
     match name {
         "reset" => {
