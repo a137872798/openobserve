@@ -36,6 +36,7 @@ const QUERIER_ROUTES: [&str; 13] = [
     "/prometheus/api/v1/label/",
 ];
 
+// 检查该path是否包含在路由内
 #[inline]
 fn check_querier_route(path: &str) -> bool {
     QUERIER_ROUTES.iter().any(|x| path.contains(x))
@@ -97,6 +98,8 @@ pub async fn gcp(
     dispatch(req, payload).await
 }
 
+
+// 匹配上面的path 会触发该方法进行转发
 async fn dispatch(
     req: HttpRequest,
     payload: web::Payload,
@@ -104,6 +107,8 @@ async fn dispatch(
     // get online nodes
     let path = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("");
     let node_type;
+
+    // 代表请求要发往的节点是 查询/摄取节点   摄取节点也就是写入数据的节点
     let nodes = if check_querier_route(path) {
         node_type = cluster::Role::Querier;
         cluster::get_cached_online_querier_nodes()
@@ -115,7 +120,7 @@ async fn dispatch(
         return Ok(HttpResponse::ServiceUnavailable().body(format!("No online {node_type} nodes")));
     }
 
-    // checking nodes
+    // checking nodes   当前没有满足条件的节点
     let mut nodes = nodes.unwrap();
     if nodes.is_empty() {
         return Ok(HttpResponse::ServiceUnavailable().body(format!("No online {node_type} nodes")));
@@ -126,6 +131,7 @@ async fn dispatch(
     let mut rng = thread_rng();
     nodes.shuffle(&mut rng);
 
+    // 简单理解就是产生了一个httpClient
     let client = awc::Client::builder()
         .connector(
             awc::Connector::new()
@@ -137,6 +143,8 @@ async fn dispatch(
 
     // send query
     let node = nodes.first().unwrap();
+
+    // 构建新的请求地址
     let new_url = format!("{}{}", node.http_addr, path);
     let resp = client
         .request_from(new_url.clone(), req.head())
@@ -148,7 +156,7 @@ async fn dispatch(
         return Ok(HttpResponse::ServiceUnavailable().body(e.to_string()));
     }
 
-    // handle response
+    // handle response   在这里构造一个空的resp对象 并将远程调用的结果数据填充进去
     let mut resp = resp.unwrap();
     let mut new_resp = HttpResponse::build(resp.status());
 

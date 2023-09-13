@@ -33,7 +33,7 @@ pub static BLOCKED_ORGS: Lazy<Vec<&str>> =
     Lazy::new(|| CONFIG.compact.blocked_orgs.split(',').collect());
 
 /**
-* 从其他服务器拉取文件数据
+* 更新本地 fileList缓存 并不是文件数据 只是记录集群中有哪些文件
 */
 pub async fn progress(
     key: &str,

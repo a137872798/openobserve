@@ -14,6 +14,7 @@
 
 use crate::common::infra::db as infra_db;
 
+// 获取偏移量信息
 pub async fn get_offset() -> Result<i64, anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/compact/file_list/offset";

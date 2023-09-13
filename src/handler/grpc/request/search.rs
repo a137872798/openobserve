@@ -25,6 +25,7 @@ use crate::service::search as SearchService;
 
 pub struct Searcher;
 
+// 提供grpc的查询服务
 #[tonic::async_trait]
 impl Search for Searcher {
     #[tracing::instrument(name = "grpc:search:enter", skip_all, fields(org_id = req.get_ref().org_id))]
@@ -32,10 +33,14 @@ impl Search for Searcher {
         &self,
         req: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        // 获取当前时间
         let start = std::time::Instant::now();
+
+        // 基于元数据生成一个 Context
         let parent_cx = global::get_text_map_propagator(|prop| {
             prop.extract(&super::MetadataMap(req.metadata()))
         });
+        // 作为链路追踪代表到了一个新的上下文  并开启一个子span  不过目前可以先不关注这个
         tracing::Span::current().set_parent(parent_cx);
 
         let req = req.get_ref().to_owned();

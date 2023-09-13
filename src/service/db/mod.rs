@@ -28,6 +28,8 @@ pub mod triggers;
 pub mod user;
 pub mod version;
 
+// 访问 DB 查询或者设置instance
+
 pub async fn get_instance() -> Result<Option<String>, anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/instance/";

@@ -22,17 +22,18 @@ use crate::service::search::datafusion::storage::StorageType;
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,
+    // 描述存储类型   包含mem/fs/tmpfs
     pub storage_type: StorageType,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[schema(as = SearchRequest)]
 pub struct Request {
-    #[schema(value_type = SearchQuery)]
+    #[schema(value_type = SearchQuery)]  // 描述查询条件
     pub query: Query,
-    #[serde(default)]
+    #[serde(default)]  // 描述聚合条件   key name/value sql
     pub aggs: HashMap<String, String>,
-    #[serde(default)]
+    #[serde(default)]  // 描述请求是否被编码过
     pub encoding: RequestEncoding,
 }
 
@@ -63,28 +64,38 @@ impl std::fmt::Display for RequestEncoding {
     }
 }
 
+// 表示查询条件
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[schema(as = SearchQuery)]
 pub struct Query {
+    // 执行的sql
     pub sql: String,
+    // 对应limit
     #[serde(default)]
     pub from: usize,
     #[serde(default = "default_size")]
     pub size: usize,
+    // 时间戳条件
     #[serde(default)]
     pub start_time: i64,
     #[serde(default)]
     pub end_time: i64,
+    // 描述数据的排序字段
     #[serde(default)]
     pub sort_by: Option<String>,
+    // 描述查询模式  context 代表查询出来的中间结果集要用于聚合查询 这样不能使用limit/group by
+    // 如果是full 则支持所有查询
     #[serde(default)]
     pub sql_mode: String,
+    // 描述查询类型
     #[serde(default)]
     pub query_type: String,
+    // 代表命中了多少记录
     #[serde(default)]
     pub track_total_hits: bool,
     #[serde(default)]
     pub query_context: Option<String>,
+    // 这里是2个函数吗 ?
     #[serde(default)]
     pub uses_zo_fn: bool,
     #[serde(default)]
@@ -117,6 +128,8 @@ impl Default for Query {
 impl Request {
     #[inline]
     pub fn decode(&mut self) -> Result<(), std::io::Error> {
+
+        // 如果描述查询语句使用了 Base64编码 先进行解码
         match self.encoding {
             RequestEncoding::Base64 => {
                 self.query.sql = match base64::decode(&self.query.sql) {
@@ -141,6 +154,7 @@ impl Request {
     }
 }
 
+// 描述查询到的结果
 #[derive(Clone, Debug, Serialize, Deserialize, Default, ToSchema)]
 #[schema(as = SearchResponse)]
 pub struct Response {
@@ -166,6 +180,7 @@ pub struct Response {
     pub response_type: String,
 }
 
+// 描述查询开销
 #[derive(Clone, Debug, Serialize, Deserialize, Default, ToSchema)]
 pub struct ResponseTook {
     pub total: usize,

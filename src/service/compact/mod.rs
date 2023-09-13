@@ -32,7 +32,7 @@ pub(crate) mod stats;
 pub(crate) static QUEUE_LOCKER: Lazy<Arc<Mutex<bool>>> =
     Lazy::new(|| Arc::new(Mutex::const_new(false)));
 
-/// compactor delete run steps:
+/// compactor delete run steps:    在进行数据合并前 先进行删除工作
 pub async fn run_delete() -> Result<(), anyhow::Error> {
     // check data retention
     if CONFIG.compact.data_retention_days > 0 {

@@ -25,6 +25,7 @@ fn mk_key(org_id: &str, stream_type: StreamType, stream_name: &str) -> String {
     format!("/compact/files/{org_id}/{stream_type}/{stream_name}")
 }
 
+// file_list 有一个偏移量信息 file也有
 pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType) -> (i64, String) {
     let key = mk_key(org_id, stream_type, stream_name);
     if let Some(offset) = CACHES.get(&key) {
@@ -36,6 +37,8 @@ pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType
         Ok(ret) => String::from_utf8_lossy(&ret).to_string(),
         Err(_) => String::from("0"),
     };
+
+    // 如果包含 ; 代表还携带node信息
     let (offset, node) = if value.contains(';') {
         let mut parts = value.split(';');
         let offset: i64 = parts.next().unwrap().parse().unwrap();
@@ -44,6 +47,8 @@ pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType
     } else {
         (value.parse().unwrap(), String::from(""))
     };
+
+    // 缓存中只保存 offset
     CACHES.insert(key.clone(), offset);
     (offset, node)
 }
@@ -72,9 +77,12 @@ pub async fn del_offset(
         .map_err(Into::into)
 }
 
+// 列举所有偏移量信息
 pub async fn list_offset() -> Result<Vec<(String, i64)>, anyhow::Error> {
     let mut items = Vec::new();
     let db = &infra_db::DEFAULT;
+
+    // 相当于得到所有stream的偏移量 并返回
     let key = "/compact/files/";
     let ret = db.list(key).await?;
     for (item_key, item_value) in ret {

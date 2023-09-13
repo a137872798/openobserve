@@ -24,6 +24,7 @@ use crate::common::infra::config::CONFIG;
 #[derive(Default)]
 pub struct LogsServer;
 
+// grpc 暴露的日志服务
 #[async_trait]
 impl LogsService for LogsServer {
     async fn export(

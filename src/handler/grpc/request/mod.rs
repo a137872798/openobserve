@@ -23,6 +23,7 @@ pub mod usage;
 
 pub struct MetadataMap<'a>(&'a tonic::metadata::MetadataMap);
 
+// TODO openTelemetry相关的
 impl<'a> Extractor for MetadataMap<'a> {
     /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str, returns None
     fn get(&self, key: &str) -> Option<&str> {

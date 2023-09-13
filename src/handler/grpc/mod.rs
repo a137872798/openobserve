@@ -25,6 +25,7 @@ pub mod cluster_rpc {
     tonic::include_proto!("cluster");
 }
 
+// grpc的模块部分 将普通的bean 转换成 grpc的请求体
 impl From<meta::search::Request> for cluster_rpc::SearchRequest {
     fn from(req: meta::search::Request) -> Self {
         let req_query = cluster_rpc::SearchQuery {
@@ -42,6 +43,7 @@ impl From<meta::search::Request> for cluster_rpc::SearchRequest {
             query_fn: req.query.query_fn.unwrap_or_default(),
         };
 
+        // 生成一个job对象
         let job = cluster_rpc::Job {
             session_id: Uuid::new_v4().to_string(),
             job: "".to_string(),
@@ -49,6 +51,7 @@ impl From<meta::search::Request> for cluster_rpc::SearchRequest {
             partition: 0,
         };
 
+        // 存储聚合信息
         let mut aggs = Vec::new();
         for (name, sql) in req.aggs {
             aggs.push(cluster_rpc::SearchAggRequest { name, sql });

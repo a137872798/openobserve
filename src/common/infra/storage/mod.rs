@@ -49,7 +49,6 @@ pub async fn list(prefix: &str) -> Result<Vec<String>, anyhow::Error> {
     Ok(files)
 }
 
-// 这其实就是下载操作 
 pub async fn get(file: &str) -> Result<bytes::Bytes, anyhow::Error> {
     let data = DEFAULT.get(&file.into()).await?;
     let data = data.bytes().await?;

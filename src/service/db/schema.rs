@@ -28,10 +28,13 @@ use crate::common::{
 };
 use crate::service::enrichment::StreamTable;
 
+// 有关schema的crud
+
 fn mk_key(org_id: &str, stream_type: StreamType, stream_name: &str) -> String {
     format!("/schema/{org_id}/{stream_type}/{stream_name}")
 }
 
+// 查询某个stream的schema
 pub async fn get(
     org_id: &str,
     stream_name: &str,
@@ -53,6 +56,7 @@ pub async fn get(
         Ok(v) => {
             let local_val: json::Value = json::from_slice(&v).unwrap();
             // for backward compatibility check if value in etcd is vec or schema based on it return value
+            // 如果返回多个 只要保留最新的
             if local_val.is_array() {
                 let local_vec: Vec<Schema> = json::from_slice(&v).unwrap();
                 local_vec.last().unwrap().clone()
@@ -89,6 +93,7 @@ pub async fn get_from_db(
     })
 }
 
+// 多个代表还包含历史版本
 pub async fn get_versions(
     org_id: &str,
     stream_name: &str,
@@ -125,25 +130,32 @@ pub async fn set(
     stream_type: StreamType,
     schema: &Schema,
     min_ts: Option<i64>,
-    new_version: bool,
+    new_version: bool,  // 增加字段还是false  只有当某个field的type变化 才会为true
 ) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let mut versions: Vec<Schema>;
     let key = format!("/schema/{org_id}/{stream_type}/{stream_name}");
     let map_key = key.strip_prefix("/schema/").unwrap();
+
     if STREAM_SCHEMAS.contains_key(map_key) {
         versions = STREAM_SCHEMAS.get(map_key).unwrap().value().clone();
+
+        // 代表schema 不兼容
         if min_ts.is_some() && new_version {
             //update last schema to add end date
             let last_schema = versions.pop().unwrap();
             if !last_schema.fields.eq(&schema.fields) {
                 let mut last_meta = last_schema.metadata().clone();
                 let created_at = last_meta.get("created_at").unwrap().to_string();
+                // 表示上个schema是什么时候失效的
                 last_meta.insert("end_dt".to_string(), min_ts.unwrap().to_string());
+                // 将补充信息后的 last_schema 重新加入version中
                 versions.push(last_schema.with_metadata(last_meta));
 
                 //update current schema to add start date
                 let mut metadata = schema.metadata().clone();
+
+                // 追加新的schema
                 metadata.insert("start_dt".to_string(), min_ts.unwrap().to_string());
                 metadata.insert("created_at".to_string(), created_at);
                 versions.push(schema.clone().with_metadata(metadata));
@@ -156,6 +168,7 @@ pub async fn set(
                     .await;
             }
         } else {
+            // 更新缓存和db的数据
             versions.pop().unwrap();
             versions.push(schema.clone());
             let _ = db
@@ -167,6 +180,8 @@ pub async fn set(
                 .await;
         }
     } else {
+
+        // 只操作DB
         let mut metadata = schema.metadata().clone();
         if metadata.contains_key("created_at") {
             metadata.insert(

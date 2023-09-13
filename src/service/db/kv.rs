@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use crate::common::infra::{config::KVS, db as infra_db};
 
+// KVS 是一个缓存  这里就是关于kv数据的crud
+
 fn mk_keys(org_id: &str, key: &str) -> (String, String) {
     let cache_key = format!("{org_id}/{key}");
     let db_key = format!("/kv/{cache_key}");
