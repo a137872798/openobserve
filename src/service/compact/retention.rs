@@ -53,7 +53,7 @@ pub async fn delete_by_stream(
         return Ok(()); // created_at is after lifecycle_end, just skip
     }
 
-    // delete files
+    // delete files  将要删除的文件记录在数据库中
     db::compact::retention::delete_stream(
         org_id,
         stream_name,

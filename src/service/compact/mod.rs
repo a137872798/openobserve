@@ -59,6 +59,8 @@ pub async fn run_delete() -> Result<(), anyhow::Error> {
                     } else {
                         data_lifecycle_end.clone()
                     };
+
+                    // 记录需要删除的文件
                     if let Err(e) = retention::delete_by_stream(
                         &stream_data_retention_end,
                         &org_id,

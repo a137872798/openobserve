@@ -51,11 +51,16 @@ pub(crate) fn get_upto_discard_error() -> String {
     )
 }
 
+// 解析value 得到一个 action/index/doc_id 三元组
 fn parse_bulk_index(v: &Value) -> Option<(String, String, String)> {
+    // 实际上认为v 应当只有一个action
     let local_val = v.as_object().unwrap();
     for action in BULK_OPERATORS {
         if local_val.contains_key(action) {
+            // action 对应的数据也是一个map
             let local_val = local_val.get(action).unwrap().as_object().unwrap();
+
+            // 获取index/id 字段
             let index = match local_val.get("_index") {
                 Some(v) => v.as_str().unwrap().to_string(),
                 None => return None,
@@ -70,18 +75,30 @@ fn parse_bulk_index(v: &Value) -> Option<(String, String, String)> {
     None
 }
 
+// 更新value下这些字段的类型
 pub fn cast_to_type(mut value: Value, delta: Vec<Field>) -> (Option<String>, Option<String>) {
+
+    // 将value转换成map
     let local_map = value.as_object_mut().unwrap();
     //let mut error_msg = String::new();
     let mut parse_error = String::new();
+
+    // 遍历每个字段
     for field in delta {
+
+        // 拿到该字段的旧数据
         let field_map = local_map.get(field.name());
         if let Some(val) = field_map {
+            // 旧数据为空 往map中查询一个空值
             if val.is_null() {
                 local_map.insert(field.name().clone(), val.clone());
                 continue;
             }
+
+            // 获取此时的字段值
             let local_val = get_value(val);
+
+            // 按要求转换成指定类型后 重新插入map
             match field.data_type() {
                 DataType::Boolean => {
                     match local_val.parse::<bool>() {
@@ -198,6 +215,7 @@ pub fn cast_to_type(mut value: Value, delta: Vec<Field>) -> (Option<String>, Opt
     }
 }
 
+// 将数据转换成string类型
 pub fn get_value(value: &Value) -> String {
     if value.is_boolean() {
         value.as_bool().unwrap().to_string()
