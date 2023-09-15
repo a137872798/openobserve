@@ -32,6 +32,7 @@ use crate::service::{
     usage::report_request_usage_stats,
 };
 
+// 处理跟bulk和json 也是类似的
 pub async fn ingest(
     org_id: &str,
     in_stream_name: &str,

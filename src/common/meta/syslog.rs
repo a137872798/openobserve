@@ -24,7 +24,7 @@ pub struct SyslogRoute {
     #[serde(default)]
     pub stream_name: String,
     #[serde(default)]
-    #[schema(value_type = Vec<String>)]
+    #[schema(value_type = Vec<String>)]   // 多个ip地址
     pub subnets: Vec<IpNetwork>,
     #[serde(default)]
     pub id: String,

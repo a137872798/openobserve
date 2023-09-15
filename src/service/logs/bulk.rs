@@ -40,16 +40,20 @@ pub const TRANSFORM_FAILED: &str = "document_failed_transform";
 pub const TS_PARSE_FAILED: &str = "timestamp_parsing_failed";
 pub const SCHEMA_CONFORMANCE_FAILED: &str = "schema_conformance_failed";
 
+// 从web层接收数据 并插入数据  应该会涉及到路由逻辑   bulk插入甚至不同数据可以来自不同的stream
 pub async fn ingest(
     org_id: &str,
-    body: web::Bytes,
-    thread_id: usize,
+    body: web::Bytes,  // 本次待处理数据
+    thread_id: usize,  // 还有指定线程id的
 ) -> Result<BulkResponse, anyhow::Error> {
     let start = std::time::Instant::now();
+
+    // 当前节点非摄取节点 无法插入数据
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Err(anyhow::anyhow!("not an ingester"));
     }
 
+    // 该org此时的数据被暂停写入了
     if !db::file_list::BLOCKED_ORGS.is_empty() && db::file_list::BLOCKED_ORGS.contains(&org_id) {
         return Err(anyhow::anyhow!("Quota exceeded for this organization"));
     }
@@ -61,12 +65,16 @@ pub async fn ingest(
         items: vec![],
     };
 
+    // ingest_allowed_upto 是一个浮动时间 下界代表最小时间戳 上界代表最大时间戳
     let mut min_ts =
         (Utc::now() + Duration::hours(CONFIG.limit.ingest_allowed_upto)).timestamp_micros();
 
+    // 产生一个vrl的运行环境  用于解析vrl函数
     let mut runtime = crate::service::ingestion::init_functions_runtime();
 
+    // 这里都是各种map的初始化
     let mut stream_vrl_map: AHashMap<String, VRLRuntimeConfig> = AHashMap::new();
+    // 存储stream相关的schema
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_data_map = AHashMap::new();
 
@@ -82,29 +90,40 @@ pub async fn ingest(
 
     let mut next_line_is_data = false;
     let reader = BufReader::new(body.as_ref());
+
+    // 按行解析数据
     for line in reader.lines() {
         let line = line?;
         if line.is_empty() {
             continue;
         }
 
+        // 一行描述 action 一行是数据
+
         let value: json::Value = json::from_slice(line.as_bytes())?;
 
+        // 首次是false
         if !next_line_is_data {
-            // check bulk operate
+            // check bulk operate   解析value 会得到一个三元组 action/index/doc_id
             let ret = super::parse_bulk_index(&value);
+            // 忽略解析失败的数据
             if ret.is_none() {
                 continue; // skip
             }
+
+            // index 实际上就可以认为是stream_name
             (action, stream_name, doc_id) = ret.unwrap();
+            // 这行是action 下行就是数据了
             next_line_is_data = true;
 
             // Start Register Transfoms for stream
 
+            // 当前数据流可能需要做转换
             crate::service::ingestion::get_stream_transforms(
                 org_id,
                 StreamType::Logs,
                 &stream_name,
+                // 该方法会填充这2个map
                 &mut stream_transform_map,
                 &mut stream_vrl_map,
             )
@@ -113,10 +132,14 @@ pub async fn ingest(
 
             // Start get stream alerts
             let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
+            // 获取该stream上已经产生的告警检测对象 之后对数据流进行检测
             crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
             // End get stream alert
 
+            // 加载stream的分区信息
             if !stream_partition_keys_map.contains_key(&stream_name.clone()) {
+
+                // 检查和读取schema信息
                 let stream_schema = stream_schema_exists(
                     org_id,
                     &stream_name,
@@ -125,6 +148,8 @@ pub async fn ingest(
                 )
                 .await;
                 let mut partition_keys: Vec<String> = vec![];
+
+                // 有分区键的情况 加载分区键
                 if stream_schema.has_partition_keys {
                     let partition_det = crate::service::ingestion::get_stream_partition_keys(
                         &stream_name,
@@ -133,30 +158,38 @@ pub async fn ingest(
                     .await;
                     partition_keys = partition_det.partition_keys;
                 }
+
+                // 保存分区键
                 stream_partition_keys_map
                     .insert(stream_name.clone(), (stream_schema, partition_keys.clone()));
             }
 
+            // 为stream准备插入的容器
             stream_data_map
                 .entry(stream_name.clone())
                 .or_insert(BulkStreamData {
                     data: AHashMap::new(),
                 });
         } else {
+
+            // 代表上一行有关action的部分已经解析好了  现在开始处理真正的数据
             next_line_is_data = false;
 
+            // 获取数据容器
             let stream_data = stream_data_map.get_mut(&stream_name).unwrap();
             let buf = &mut stream_data.data;
 
             //Start row based transform
-
             let key = format!("{org_id}/{}/{stream_name}", StreamType::Logs);
 
-            //JSON Flattening
+            //JSON Flattening  展开json字符串
             let mut value = flatten::flatten(&value)?;
 
+            // 获取stream相关的转换器
             if let Some(transforms) = stream_transform_map.get(&key) {
                 let mut ret_value = value.clone();
+
+                // 将转换器作用在原始数据上 TODO vrl相关的先忽略
                 ret_value = crate::service::ingestion::apply_stream_transform(
                     transforms,
                     &ret_value,
@@ -165,8 +198,11 @@ pub async fn ingest(
                     &mut runtime,
                 )?;
 
+                // 简单理解就是 vrl转换失败了
                 if ret_value.is_null() || !ret_value.is_object() {
                     bulk_res.errors = true;
+
+                    // 将错误信息加入到 bulk_res.items 中
                     add_record_status(
                         stream_name.clone(),
                         doc_id.clone(),
@@ -183,14 +219,16 @@ pub async fn ingest(
             }
             //End row based transform
 
+            // 此时已经完成了数据转换了
+
             // get json object
             let local_val = value.as_object_mut().unwrap();
-            // set _id
+            // set _id   为数据设置id
             if !doc_id.is_empty() {
                 local_val.insert("_id".to_string(), json::Value::String(doc_id.clone()));
             }
 
-            // handle timestamp
+            // handle timestamp   尝试从数据中解析出时间戳
             let timestamp = match local_val.get(&CONFIG.common.column_timestamp) {
                 Some(v) => match parse_timestamp_micro_from_value(v) {
                     Ok(t) => t,
@@ -210,8 +248,10 @@ pub async fn ingest(
                 },
                 None => Utc::now().timestamp_micros(),
             };
-            // check ingestion time
+            // check ingestion time   这个应该是数据允许被摄取的时间?  避免数据被过早摄取
             let earliest_time = Utc::now() + Duration::hours(0 - CONFIG.limit.ingest_allowed_upto);
+
+            // 代表过早摄取 时间戳有问题
             if timestamp < earliest_time.timestamp_micros() {
                 bulk_res.errors = true;
                 let failure_reason = Some(super::get_upto_discard_error());
@@ -226,20 +266,28 @@ pub async fn ingest(
                 );
                 continue;
             }
+
+            // 更新最小时间戳
             if timestamp < min_ts {
                 min_ts = timestamp;
             }
+
+            // 往数据中插入时间戳信息
             local_val.insert(
                 CONFIG.common.column_timestamp.clone(),
                 json::Value::Number(timestamp.into()),
             );
+
+            // 获取stream的分区键
             let partition_keys: Vec<String> = match stream_partition_keys_map.get(&stream_name) {
                 Some((_, partition_keys)) => partition_keys.to_vec(),
                 None => vec![],
             };
 
-            // only for bulk insert
+            // only for bulk insert  RecordStatus 记录了成功/失败的数量
             let mut status = RecordStatus::default();
+
+            // 将记录存储到buf中   buf的key中包含了分区键
             let local_trigger = super::add_valid_record(
                 StreamMeta {
                     org_id: org_id.to_string(),
@@ -253,9 +301,13 @@ pub async fn ingest(
                 local_val,
             )
             .await;
+
+            // 是否产生告警 和数据能否插入无关 只是说插入的数据本身有问题
             if local_trigger.is_some() {
                 stream_trigger_map.insert(stream_name.clone(), local_trigger.unwrap());
             }
+
+            // 代表本条数据插入失败了
             if status.failed > 0 {
                 bulk_res.errors = true;
                 add_record_status(
@@ -281,17 +333,21 @@ pub async fn ingest(
         }
     }
 
+    // 此时已经完成数据插入了
     let time = start.elapsed().as_secs_f64();
+
+    // 遍历每个stream的数据块
     for (stream_name, stream_data) in stream_data_map {
-        // check if we are allowed to ingest
+        // check if we are allowed to ingest   如果该stream已经被标记成删除了  忽略
         if db::compact::retention::is_deleting_stream(org_id, &stream_name, StreamType::Logs, None)
         {
             log::warn!("stream [{stream_name}] is being deleted");
             continue;
         }
-        // write to file
+        // write to file  之后被写入的文件名会记录在这里
         let mut stream_file_name = "".to_string();
 
+        // 将内存中的数据写入到文件中
         let mut req_stats = write_file(
             stream_data.data,
             thread_id,
@@ -306,6 +362,8 @@ pub async fn ingest(
         req_stats.response_time += time;
         //metric + data usage
         let fns_length: usize = stream_transform_map.values().map(|v| v.len()).sum();
+
+        // 将信息更新到RequestStats中 可以先忽略
         report_request_usage_stats(
             req_stats,
             org_id,
@@ -317,7 +375,7 @@ pub async fn ingest(
         .await;
     }
 
-    // only one trigger per request, as it updates etcd
+    // only one trigger per request, as it updates etcd  之前产生的告警在这里批量通知
     for (_, entry) in &stream_trigger_map {
         super::evaluate_trigger(Some(entry.clone()), stream_alerts_map.clone()).await;
     }
@@ -345,19 +403,23 @@ pub async fn ingest(
     Ok(bulk_res)
 }
 
+// 记录结果
 fn add_record_status(
     stream_name: String,
     doc_id: String,
     action: String,
     value: json::Value,
-    bulk_res: &mut BulkResponse,
-    failure_type: Option<String>,
-    failure_reason: Option<String>,
+    bulk_res: &mut BulkResponse,  // 表示某个bulk请求结果
+    failure_type: Option<String>,  // 描述失败类型
+    failure_reason: Option<String>,   // 描述失败信息
 ) {
     let mut item = AHashMap::new();
 
     match failure_type {
+        // 有failure_type的话 多一个失败类型
         Some(failure_type) => {
+
+            // 产生error对象
             let bulk_err = BulkResponseError::new(
                 failure_type,
                 stream_name.clone(),
@@ -376,6 +438,7 @@ fn add_record_status(
                 ),
             );
         }
+        // 其实这代表成功了
         None => {
             item.insert(
                 action,

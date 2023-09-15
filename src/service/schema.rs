@@ -56,8 +56,8 @@ pub async fn schema_evolution(
             Some(min_ts),
             false,
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
     } else if !inferred_schema.fields().eq(schema.fields()) {
         let schema_fields: HashSet<_> = schema.fields().iter().collect();
         let mut field_datatype_delta: Vec<_> = vec![];
@@ -120,8 +120,8 @@ pub async fn schema_evolution(
                         Some(min_ts),
                         is_field_delta,
                     )
-                    .await
-                    .unwrap();
+                        .await
+                        .unwrap();
                 }
             }
         };
@@ -129,7 +129,7 @@ pub async fn schema_evolution(
 }
 
 // Hack to allow widening conversion, method overrides Schema::try_merge
-fn try_merge(schemas: impl IntoIterator<Item = Schema>) -> Result<Schema, ArrowError> {
+fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowError> {
     let mut merged_metadata: HashMap<String, String> = HashMap::new();
     let mut merged_fields: Vec<Field> = Vec::new();
     // TODO : this dummy initialization is to avoid compiler complaining for uninitialized value
@@ -199,6 +199,7 @@ fn try_merge(schemas: impl IntoIterator<Item = Schema>) -> Result<Schema, ArrowE
     Ok(merged)
 }
 
+// 尝试转换类型
 fn is_widening_conversion(from: &DataType, to: &DataType) -> bool {
     let allowed_type = match from {
         DataType::Boolean => vec![DataType::Utf8],
@@ -243,17 +244,22 @@ fn is_widening_conversion(from: &DataType, to: &DataType) -> bool {
     allowed_type.contains(to)
 }
 
+/*
+检查某个json字符串是否满足schema
+ */
 pub async fn check_for_schema(
     org_id: &str,
     stream_name: &str,
-    stream_type: StreamType,
-    val_str: &str,
-    stream_schema_map: &mut AHashMap<String, Schema>,
-    record_ts: i64,
+    stream_type: StreamType,  // 描述数据流的类型  无论是日志 traces 还是metrics 都可以当作stream   后面二者也是从其他地方接入的
+    val_str: &str,    // json字符串
+    stream_schema_map: &mut AHashMap<String, Schema>,  // 维护所有stream的schema信息
+    record_ts: i64,  // 该记录的产生时间
 ) -> SchemaEvolution {
+    // 获取该stream相关的schema
     let mut schema = if stream_schema_map.contains_key(stream_name) {
         stream_schema_map.get(stream_name).unwrap().clone()
     } else {
+        // 尝试从db中获取
         let schema = db::schema::get(org_id, stream_name, stream_type)
             .await
             .unwrap();
@@ -261,8 +267,9 @@ pub async fn check_for_schema(
         schema
     };
 
+    // 跳过schema校验
     if !schema.fields().is_empty() && CONFIG.common.skip_schema_validation {
-        //return (true, None, schema.fields().to_vec());
+        //return (true, None, schema.fields().to_vec());     表示新纪录中没有新增的field
         return SchemaEvolution {
             schema_compatible: true,
             types_delta: None,
@@ -272,7 +279,10 @@ pub async fn check_for_schema(
     }
 
     let mut schema_reader = BufReader::new(val_str.as_bytes());
+    // 将json转换成 arrow格式 来获取 schema信息  此时的schema是嵌套结构的
     let inferred_schema = infer_json_schema(&mut schema_reader, None).unwrap();
+
+    // eq代表结构完全匹配  包括嵌套的部分
     if schema.fields.eq(&inferred_schema.fields) {
         //return (true, None, schema.fields().to_vec());
         return SchemaEvolution {
@@ -283,6 +293,7 @@ pub async fn check_for_schema(
         };
     }
 
+    // 此时新记录的schema 与 stream的schema已经不一样了    当超过req_cols_per_record_limit时  返回不兼容
     if inferred_schema.fields.len() > CONFIG.limit.req_cols_per_record_limit {
         //return (false, None, inferred_schema.fields().to_vec());
         return SchemaEvolution {
@@ -293,9 +304,11 @@ pub async fn check_for_schema(
         };
     }
 
+    // 如果stream还没有schema 或者说本条记录是该stream的第一条
     if schema.fields().is_empty() {
+        // 将新的schema包装成 SchemaEvolution
         if let Some(value) = handle_new_schema(
-            &mut schema,
+            &mut schema,   // 如果被其他线程抢先了 就会设置成其他的schema
             &inferred_schema,
             stream_schema_map,
             stream_name,
@@ -303,16 +316,22 @@ pub async fn check_for_schema(
             stream_type,
             &record_ts,
         )
-        .await
+            .await
         {
+            // 代表首次设置schema成功
             return value;
         }
     };
 
+    // 比较2个schema 获取不匹配的字段
+    // field_datatype_delta 代表检测到冲突的字段 可以转换的情况下就是新字段 否则就是旧字段
+    // is_schema_changed 描述是否发生变化
+    // final_fields 代表合并后的字段
     let (field_datatype_delta, is_schema_changed, final_fields) =
         get_schema_changes(&schema, &inferred_schema);
 
     if is_schema_changed {
+        // 字段发生变化的情况  进行处理
         if let Some(value) = handle_existing_schema(
             stream_name,
             org_id,
@@ -321,10 +340,11 @@ pub async fn check_for_schema(
             record_ts,
             stream_schema_map,
         )
-        .await
+            .await
         {
             value
         } else {
+            // 处理失败的情况 使用原来的schema  也就是会丢弃掉部分字段
             SchemaEvolution {
                 schema_compatible: true,
                 types_delta: Some(field_datatype_delta),
@@ -333,6 +353,7 @@ pub async fn check_for_schema(
             }
         }
     } else {
+        // 代表被其他抢先的schema 与本schema没有冲突
         SchemaEvolution {
             schema_compatible: true,
             types_delta: Some(field_datatype_delta),
@@ -342,6 +363,9 @@ pub async fn check_for_schema(
     }
 }
 
+/*
+此时发生了schema的冲突 需要处理已经存在的schema
+ */
 async fn handle_existing_schema(
     stream_name: &str,
     org_id: &str,
@@ -350,26 +374,42 @@ async fn handle_existing_schema(
     record_ts: i64,
     stream_schema_map: &mut AHashMap<String, Schema>,
 ) -> Option<SchemaEvolution> {
+
+    // 非本地模式
     if !CONFIG.common.local_mode {
+
+        // 获取分布式锁
         let mut lock = etcd::Locker::new(&format!("schema/{org_id}/{stream_type}/{stream_name}"));
         lock.lock(0).await.map_err(server_internal_error).unwrap();
+
+        // 从db中加载schema
         let schema = db::schema::get_from_db(org_id, stream_name, stream_type)
             .await
             .unwrap();
+
+        // 比较新旧schema
         let (field_datatype_delta, is_schema_changed, final_fields) =
             get_schema_changes(&schema, &inferred_schema);
+
         let is_field_delta = !field_datatype_delta.is_empty();
         let mut metadata = schema.metadata().clone();
+
+        // 在元数据中记录 schema的创建时间
         if !metadata.contains_key("created_at") {
             metadata.insert(
                 "created_at".to_string(),
                 chrono::Utc::now().timestamp_micros().to_string(),
             );
         }
+
+        // 合并元数据
         metadata.extend(inferred_schema.metadata().to_owned());
         let final_schema = Schema::new(final_fields.clone()).with_metadata(metadata);
+        // 如果元数据发生了变化
         if is_schema_changed {
             log::info!("Acquired lock for stream {} to update schema", stream_name);
+
+            // 更新schema
             db::schema::set(
                 org_id,
                 stream_name,
@@ -378,14 +418,16 @@ async fn handle_existing_schema(
                 Some(record_ts),
                 is_field_delta,
             )
-            .await
-            .unwrap();
+                .await
+                .unwrap();
             lock.unlock().await.map_err(server_internal_error).unwrap();
             stream_schema_map.insert(stream_name.to_string(), final_schema.clone());
         } else {
             lock.unlock().await.map_err(server_internal_error).unwrap();
             stream_schema_map.insert(stream_name.to_string(), schema.clone());
         }
+
+        // 成功解决冲突 并更新DB后 就可以表示兼容
         Some(SchemaEvolution {
             schema_compatible: true,
             types_delta: Some(field_datatype_delta),
@@ -398,6 +440,7 @@ async fn handle_existing_schema(
             &CONFIG.sled.prefix
         );
 
+        // 本地模式 获取本地读写锁即可
         let value = LOCAL_SCHEMA_LOCKER
             .entry(key.clone())
             .or_insert_with(|| tokio::sync::RwLock::new(false));
@@ -405,6 +448,8 @@ async fn handle_existing_schema(
         let mut lock_acquired = value.write().await; // lock acquired
 
         if !*lock_acquired {
+
+            // 获取锁成功 下面的逻辑跟获得分布式锁后的一样
             *lock_acquired = true; // We've acquired the lock.
 
             let schema = db::schema::get_from_db(org_id, stream_name, stream_type)
@@ -432,8 +477,8 @@ async fn handle_existing_schema(
                     Some(record_ts),
                     is_field_delta,
                 )
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
                 stream_schema_map.insert(stream_name.to_string(), final_schema.clone());
             } else {
                 //No Change in schema.
@@ -450,9 +495,11 @@ async fn handle_existing_schema(
             })
         } else {
             // Some other request has already acquired the lock.
+            // 被别人抢先了
             let schema = db::schema::get_from_db(org_id, stream_name, stream_type)
                 .await
                 .unwrap();
+            // 使用另一条线程更新好的schema
             let (field_datatype_delta, _is_schema_changed, final_fields) =
                 get_schema_changes(&schema, &inferred_schema);
             stream_schema_map.insert(stream_name.to_string(), schema);
@@ -469,27 +516,39 @@ async fn handle_existing_schema(
     }
 }
 
+// 代表之前stream的schema还是空的 首次生成schema
 async fn handle_new_schema(
-    schema: &mut Schema,
-    inferred_schema: &Schema,
-    stream_schema_map: &mut AHashMap<String, Schema>,
+    schema: &mut Schema, // 空schema   如果其他线程抢先了 那么在方法结束时 可能会设置成别的
+    inferred_schema: &Schema, // 本次解析新记录后得到的schema
+    stream_schema_map: &mut AHashMap<String, Schema>,  // 这里存储了所有stream的schema
     stream_name: &str,
     org_id: &str,
     stream_type: StreamType,
     record_ts: &i64,
 ) -> Option<SchemaEvolution> {
+
+    // 只有在schema为空的时候 才处理
     if *schema == Schema::empty() {
+
+        // 获取解析出来的schema的 元数据
         let mut metadata = inferred_schema.metadata.clone();
+
+        // 代表该schema的创建时间
         if !metadata.contains_key("created_at") {
             metadata.insert(
                 "created_at".to_string(),
                 chrono::Utc::now().timestamp_micros().to_string(),
             );
         }
+
+        // 将schema设置到map中
         let final_schema = inferred_schema.clone().with_metadata(metadata.clone());
         stream_schema_map.insert(stream_name.to_string(), final_schema.clone());
 
+        // 集群模式 需要获取分布式锁
         if !CONFIG.common.local_mode {
+
+            // 获取分布式锁
             let mut lock =
                 etcd::Locker::new(&format!("schema/{org_id}/{stream_type}/{stream_name}"));
             lock.lock(0).await.map_err(server_internal_error).unwrap();
@@ -497,15 +556,18 @@ async fn handle_new_schema(
 
             // try getting schema
 
+            // 进行二次检查
             let chk_schema = db::schema::get_from_db(org_id, stream_name, stream_type)
                 .await
                 .unwrap();
 
+            // 确保此时本地还没有schema插入
             if chk_schema.fields().is_empty() {
                 log::info!(
                     "Setting schema for stream {} as schema is empty",
                     stream_name
                 );
+                // schema入库
                 db::schema::set(
                     org_id,
                     stream_name,
@@ -514,15 +576,15 @@ async fn handle_new_schema(
                     Some(*record_ts),
                     false,
                 )
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
                 lock.unlock().await.map_err(server_internal_error).unwrap();
                 log::info!(
                     "Releasing lock for stream {} after schema is set",
                     stream_name
                 );
 
-                //return (true, None, final_schema.fields().to_vec());
+                //return (true, None, final_schema.fields().to_vec());   新的schema插入完成 返回兼容的结果
                 return Some(SchemaEvolution {
                     schema_compatible: true,
                     types_delta: None,
@@ -530,6 +592,7 @@ async fn handle_new_schema(
                     is_schema_changed: true,
                 });
             } else {
+                // 此时库中已经有schema数据了 会在下面返回None
                 *schema = chk_schema;
                 lock.unlock().await.map_err(server_internal_error).unwrap();
                 log::info!(
@@ -538,6 +601,8 @@ async fn handle_new_schema(
                 );
             }
         } else {
+
+            // 本地模式 只需要获取本地读写锁即可
             let key = format!(
                 "{}/schema/lock/{org_id}/{stream_type}/{stream_name}",
                 &CONFIG.sled.prefix
@@ -547,9 +612,12 @@ async fn handle_new_schema(
                 .entry(key.clone())
                 .or_insert_with(|| tokio::sync::RwLock::new(false));
 
+            // 先尝试获取本地锁
             let mut lock_acquired = value.write().await; // lock acquired
             if !*lock_acquired {
-                *lock_acquired = true; // We've acquired the lock.
+                // 获取锁成功
+                *lock_acquired = true;
+                // We've acquired the lock.
                 log::info!(
                     "Acquired lock for stream {} as schema is empty",
                     stream_name
@@ -557,11 +625,15 @@ async fn handle_new_schema(
                 let chk_schema = db::schema::get_from_db(org_id, stream_name, stream_type)
                     .await
                     .unwrap();
+
+                // 如果DB中还没有schema
                 if chk_schema.fields().is_empty() {
                     log::info!(
                         "Setting schema for stream {} as schema is empty",
                         stream_name
                     );
+
+                    // 设置新的schema
                     db::schema::set(
                         org_id,
                         stream_name,
@@ -570,8 +642,8 @@ async fn handle_new_schema(
                         Some(*record_ts),
                         false,
                     )
-                    .await
-                    .unwrap();
+                        .await
+                        .unwrap();
                     *lock_acquired = false;
                     drop(lock_acquired); // release lock
                     return Some(SchemaEvolution {
@@ -581,7 +653,7 @@ async fn handle_new_schema(
                         is_schema_changed: true,
                     });
                 } else {
-                    // No schema change
+                    // No schema change   已经存在schema了 不能强行插入
                     *lock_acquired = false;
                     drop(lock_acquired); // release lock
                     *schema = chk_schema;
@@ -591,7 +663,7 @@ async fn handle_new_schema(
                     );
                 }
             } else {
-                // Some other request has already acquired the lock.
+                // Some other request has already acquired the lock.   有其他请求获取了锁 放弃处理
                 *lock_acquired = false;
                 drop(lock_acquired); // release lock
                 let chk_schema = db::schema::get_from_db(org_id, stream_name, stream_type)
@@ -605,33 +677,54 @@ async fn handle_new_schema(
     None
 }
 
+
+/**
+ *获取schema 变化的字段
+ * @param inferred_schema 代表后面的schema
+ */
 fn get_schema_changes(schema: &Schema, inferred_schema: &Schema) -> (Vec<Field>, bool, Vec<Field>) {
+
+    // 记录类型冲突的字段(旧的) 如果转换不成功 会设置一个特殊的元数据
     let mut field_datatype_delta: Vec<_> = vec![];
+
+    // 记录新增的field
     let mut new_field_delta: Vec<_> = vec![];
     let mut merged_fields: AHashMap<String, Field> = AHashMap::new();
+
+    // 代表新增了field
     let mut is_schema_changed = false;
 
+    // 先获取旧的field
     for f in schema.fields.iter() {
         merged_fields.insert(f.name().to_owned(), (**f).clone());
     }
 
+    // 遍历新的field
     for item in inferred_schema.fields.iter() {
         let item_name = item.name();
         let item_data_type = item.data_type();
 
         match merged_fields.get(item_name) {
             Some(existing_field) => {
+                // 检查与原来的字段类型 有无冲突
                 if existing_field.data_type() != item_data_type {
+
+                    // 不允许字段类型修改
                     if !CONFIG.common.widening_schema_evolution {
                         field_datatype_delta.push(existing_field.clone());
                     } else {
+                        // 尝试转换类型
                         let allowed =
                             is_widening_conversion(existing_field.data_type(), item_data_type);
+
+                        // 支持转换
                         if allowed {
                             is_schema_changed = true;
                             field_datatype_delta.push((**item).clone());
+                            // 插入新类型
                             merged_fields.insert(item_name.to_owned(), (**item).clone());
                         } else {
+                            // 不支持的情况下 会在元数据中设置一个 zo_cast
                             let mut meta = existing_field.metadata().clone();
                             meta.insert("zo_cast".to_owned(), true.to_string());
                             field_datatype_delta.push(existing_field.clone().with_metadata(meta));
@@ -639,6 +732,7 @@ fn get_schema_changes(schema: &Schema, inferred_schema: &Schema) -> (Vec<Field>,
                     }
                 }
             }
+            // 之前不存在 代表新增了field
             None => {
                 is_schema_changed = true;
                 new_field_delta.push(item);
@@ -650,12 +744,14 @@ fn get_schema_changes(schema: &Schema, inferred_schema: &Schema) -> (Vec<Field>,
     (field_datatype_delta, is_schema_changed, final_fields)
 }
 
+// 获取stream的schema信息
 pub async fn stream_schema_exists(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
     stream_schema_map: &mut AHashMap<String, Schema>,
 ) -> StreamSchemaChk {
+
     let mut schema_chk = StreamSchemaChk {
         conforms: true,
         has_fields: false,
@@ -665,6 +761,7 @@ pub async fn stream_schema_exists(
     let schema = match stream_schema_map.get(stream_name) {
         Some(schema) => schema.clone(),
         None => {
+            // 从db中加载schema  只保留最新的
             let schema = db::schema::get(org_id, stream_name, stream_type)
                 .await
                 .unwrap();
@@ -672,9 +769,12 @@ pub async fn stream_schema_exists(
             schema
         }
     };
+
     if !schema.fields().is_empty() {
         schema_chk.has_fields = true;
     }
+
+    // 从schema的元数据中解析 分区键
     if let Some(value) = schema.metadata().get("settings") {
         let settings: json::Value = json::from_slice(value.as_bytes()).unwrap();
         if settings.get("partition_keys").is_some() {
@@ -726,8 +826,8 @@ pub async fn add_stream_schema(
         Some(min_ts),
         false,
     )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     stream_schema_map.insert(stream_name.to_string(), inferred_schema.clone());
 }
 
@@ -764,7 +864,7 @@ pub async fn set_schema_metadata(
         None,
         false,
     )
-    .await
+        .await
 }
 
 #[cfg(test)]
@@ -792,7 +892,7 @@ mod test {
                 Field::new("c3", DataType::Utf8, false),
             ]),
         ])
-        .unwrap();
+            .unwrap();
 
         assert_eq!(
             merged,
@@ -825,7 +925,7 @@ mod test {
             &mut map,
             1234234234234,
         )
-        .await;
+            .await;
         assert!(result.schema_compatible);
     }
 }

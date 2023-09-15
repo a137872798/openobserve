@@ -203,7 +203,7 @@ pub struct Common {
     pub data_db_dir: String,
     #[env_config(name = "ZO_BASE_URI", default = "")]
     pub base_uri: String,
-    #[env_config(name = "ZO_WAL_MEMORY_MODE_ENABLED", default = false)]
+    #[env_config(name = "ZO_WAL_MEMORY_MODE_ENABLED", default = false)]  // 代表使用内存模拟文件
     pub wal_memory_mode_enabled: bool,
     #[env_config(name = "ZO_WAL_LINE_MODE_ENABLED", default = true)]
     pub wal_line_mode_enabled: bool,
@@ -277,7 +277,7 @@ pub struct Limit {
     pub file_move_thread_num: usize,
     #[env_config(name = "ZO_QUERY_THREAD_NUM", default = 0)]
     pub query_thread_num: usize,
-    #[env_config(name = "ZO_INGEST_ALLOWED_UPTO", default = 5)] // in hours - in past
+    #[env_config(name = "ZO_INGEST_ALLOWED_UPTO", default = 5)] // in hours - in past   代表一个时间戳的漂移
     pub ingest_allowed_upto: i64,
     #[env_config(name = "ZO_LOGS_FILE_RETENTION", default = "hourly")]
     pub logs_file_retention: String,

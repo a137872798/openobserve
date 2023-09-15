@@ -264,6 +264,8 @@ impl From<&str> for StreamSettings {
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PartitionTimeLevel {
+
+    // 描述基于时间分区时 使用的单位
     #[default]
     Unset,
     Hourly,
@@ -312,10 +314,11 @@ pub struct StreamParams<'a> {
     pub stream_type: StreamType,
 }
 
+// 描述schema验证的结果
 pub struct SchemaEvolution {
     pub schema_compatible: bool,
-    pub types_delta: Option<Vec<Field>>,
-    pub schema_fields: Vec<Field>,
+    pub types_delta: Option<Vec<Field>>,  // 代表相较原schema增加的field
+    pub schema_fields: Vec<Field>,    // 解析出来的schema
     pub is_schema_changed: bool,
 }
 

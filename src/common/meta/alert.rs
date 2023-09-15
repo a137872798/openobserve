@@ -33,7 +33,7 @@ pub struct Alert {
     pub frequency: i64,
     pub time_between_alerts: i64,
     pub destination: String,
-    #[serde(default)]
+    #[serde(default)]  // true 代表针对实时进入的数据流进行检测
     pub is_real_time: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_attributes: Option<HashMap<String, String>>,
@@ -139,6 +139,7 @@ pub struct AlertList {
     pub list: Vec<Alert>,
 }
 
+// 触发器
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trigger {
     #[serde(default)]

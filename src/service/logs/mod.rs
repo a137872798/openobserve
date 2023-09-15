@@ -232,22 +232,26 @@ pub fn get_value(value: &Value) -> String {
     }
 }
 
+// 将一条记录添加到stream中
 async fn add_valid_record(
-    stream_meta: StreamMeta,
-    stream_schema_map: &mut AHashMap<String, Schema>,
-    status: &mut RecordStatus,
-    buf: &mut AHashMap<String, Vec<String>>,
-    local_val: &mut Map<String, Value>,
-) -> Option<Trigger> {
+    stream_meta: StreamMeta,   // 该对象描述了 stream的基本信息 以及分区键
+    stream_schema_map: &mut AHashMap<String, Schema>,  // 维护所有stream的schema信息
+    status: &mut RecordStatus,  // 描述成功数/失败数  用于记录本次的结果
+    buf: &mut AHashMap<String, Vec<String>>,  // 存储数据的容器
+    local_val: &mut Map<String, Value>,  // 这应该是一条本地的记录
+) -> Option<Trigger> {  // 数据流可能会应为检测对象而产生告警
     let mut trigger: Option<Trigger> = None;
+
+    // 获取本地记录的时间戳字段
     let timestamp: i64 = local_val
         .get(&CONFIG.common.column_timestamp)
         .unwrap()
         .as_i64()
         .unwrap();
 
+    // 将该条记录转换成 json格式
     let mut value_str = utils::json::to_string(&local_val).unwrap();
-    // check schema
+    // check schema   检查原schema与现有schema是否兼容  并尝试更新db的schema
     let schema_evolution = check_for_schema(
         &stream_meta.org_id,
         &stream_meta.stream_name,
@@ -258,8 +262,11 @@ async fn add_valid_record(
     )
     .await;
 
-    // get hour key
+    // get hour key   用该schema信息产生一个hash值
     let schema_key = get_fields_key_xxh3(&schema_evolution.schema_fields);
+
+    // 在数据写入日志前 需要产生一个时间key 用于将数据分区  这样可以提高查询效率
+    // key 分为3部分  第一部分 时间  第二部分 hash值 第三部分 分区kv
     let hour_key = get_wal_time_key(
         timestamp,
         &stream_meta.partition_keys,
@@ -267,15 +274,28 @@ async fn add_valid_record(
         local_val,
         Some(&schema_key),
     );
+
+    // 得到存储数据的内存桶
     let hour_buf = buf.entry(hour_key).or_default();
 
+    // 在schema兼容的情况下继续处理
     if schema_evolution.schema_compatible {
+
+        // 代表发现了新增的field
         let valid_record = if schema_evolution.types_delta.is_some() {
+
             let delta = schema_evolution.types_delta.unwrap();
+
+            // 从json再转换回对象
             let loc_value: Value = utils::json::from_slice(value_str.as_bytes()).unwrap();
+
+            // 代表之前在schema不同时 没有做类型转换 现在尝试转换
             let (ret_val, error) = if !CONFIG.common.widening_schema_evolution {
                 cast_to_type(loc_value, delta)
+
+                // 代表field的类型发生变化
             } else if schema_evolution.is_schema_changed {
+                // 检查元数据中是否包含 zo_cast 有的话 代表之前转换不成功
                 let local_delta = delta
                     .into_iter()
                     .filter(|x| x.metadata().contains_key("zo_cast"))
@@ -284,11 +304,14 @@ async fn add_valid_record(
                 if local_delta.is_empty() {
                     (Some(value_str.clone()), None)
                 } else {
+                    // 再次尝试转换
                     cast_to_type(loc_value, local_delta)
                 }
             } else {
                 cast_to_type(loc_value, delta)
             };
+
+            // 转换成功
             if ret_val.is_some() {
                 value_str = ret_val.unwrap();
                 true
@@ -301,7 +324,10 @@ async fn add_valid_record(
             true
         };
 
+        // 转换记录成功
         if valid_record {
+
+            // 判断日志是否会产生告警
             if !stream_meta.stream_alerts_map.is_empty() {
                 // Start check for alert trigger
                 let key = format!(
@@ -310,10 +336,16 @@ async fn add_valid_record(
                     StreamType::Logs,
                     &stream_meta.stream_name
                 );
+
+                // 拿到stream相关的一组告警检测器
                 if let Some(alerts) = stream_meta.stream_alerts_map.get(&key) {
                     for alert in alerts {
+                        // 代表对数据进行实时监测
                         if alert.is_real_time {
+
                             let set_trigger = alert.condition.evaluate(local_val.clone());
+
+                            // 产生告警
                             if set_trigger {
                                 // let _ = triggers::save_trigger(alert.name.clone(), trigger).await;
                                 trigger = Some(Trigger {
@@ -337,11 +369,13 @@ async fn add_valid_record(
             status.successful += 1;
         };
     } else {
+        // schema不兼容  本次数据插入失败
         status.failed += 1;
     }
     trigger
 }
 
+// 记录错误信息
 fn set_parsing_error(parse_error: &mut String, field: &Field) {
     parse_error.push_str(&format!(
         "Failed to cast {} to type {} ",
@@ -350,6 +384,7 @@ fn set_parsing_error(parse_error: &mut String, field: &Field) {
     ));
 }
 
+// 发出通知
 async fn evaluate_trigger(
     trigger: Option<Trigger>,
     stream_alerts_map: AHashMap<String, Vec<Alert>>,
@@ -361,6 +396,7 @@ async fn evaluate_trigger(
             .unwrap()
             .clone();
 
+        // 找到触发该告警的 trigger
         alerts.retain(|alert| alert.name.eq(&val.alert_name));
         if !alerts.is_empty() {
             crate::service::ingestion::send_ingest_notification(
@@ -372,11 +408,14 @@ async fn evaluate_trigger(
     }
 }
 
+/*
+描述流的元数据
+ */
 struct StreamMeta {
     org_id: String,
     stream_name: String,
-    partition_keys: Vec<String>,
-    stream_alerts_map: AHashMap<String, Vec<Alert>>,
+    partition_keys: Vec<String>,  // 分区键 看来一个stream的数据会写入到不同的节点
+    stream_alerts_map: AHashMap<String, Vec<Alert>>,  // 某个stream关联的所有告警检测器 当数据满足条件时 就会产生告警
 }
 
 #[cfg(test)]

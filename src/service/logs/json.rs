@@ -33,13 +33,13 @@ use crate::service::{
 };
 
 /**
- * 对日志数据进行抽取
+ * 单条日志数据插入
  */
 pub async fn ingest(
     org_id: &str,    // 组织id
     in_stream_name: &str,  // stream name
     body: web::Bytes,  // 数据体 或者说json数据
-    thread_id: usize,
+    thread_id: usize,  // 每个线程id 对应一个读写文件
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
     // 对一些符号做转换
@@ -60,10 +60,11 @@ pub async fn ingest(
         return Err(anyhow::anyhow!("stream [{stream_name}] is being deleted"));
     }
 
-    // 代表从中摄取的最小时间戳   距离当前时间超过ingest_allowed_upto的数据不会被摄取
+    // 表示超过该时间戳的记录不会被摄取
     let mut min_ts =
         (Utc::now() + Duration::hours(CONFIG.limit.ingest_allowed_upto)).timestamp_micros();
 
+    // 获取vrl函数
     let mut runtime = crate::service::ingestion::init_functions_runtime();
 
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
@@ -71,7 +72,7 @@ pub async fn ingest(
     let mut stream_status = StreamStatus::new(stream_name);
     let mut trigger: Option<Trigger> = None;
 
-    // Start Register Transforms for stream
+    // Start Register Transforms for stream   获取该stream关联的转换器 以及vrl配置
     let (local_trans, stream_vrl_map) = crate::service::ingestion::register_stream_transforms(
         org_id,
         StreamType::Logs,
@@ -79,6 +80,7 @@ pub async fn ingest(
     );
     // End Register Transforms for stream
 
+    // 获取stream的schema信息
     let stream_schema = stream_schema_exists(
         org_id,
         stream_name,
@@ -88,6 +90,7 @@ pub async fn ingest(
     .await;
 
     let mut partition_keys: Vec<String> = vec![];
+    // 获取分区键
     if stream_schema.has_partition_keys {
         let partition_det =
             crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
@@ -97,15 +100,21 @@ pub async fn ingest(
 
     // Start get stream alerts
     let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
+    // 获取告警检测对象
     crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
     // End get stream alert
 
     let mut buf: AHashMap<String, Vec<String>> = AHashMap::new();
+
+    // 看来支持传入多个json
     let reader: Vec<json::Value> = json::from_slice(&body)?;
+
+    // 挨个处理json对象 不过他们都必须是针对同一个stream
     for item in reader.iter() {
         //JSON Flattening
         let mut value = flatten::flatten(item)?;
 
+        // 转换数据
         if !local_trans.is_empty() {
             value = crate::service::ingestion::apply_stream_transform(
                 &local_trans,
@@ -116,6 +125,7 @@ pub async fn ingest(
             )?;
         }
 
+        // 转换失败
         if value.is_null() || !value.is_object() {
             stream_status.status.failed += 1; // transform failed or dropped
             continue;
@@ -139,6 +149,8 @@ pub async fn ingest(
         };
         // check ingestion time
         let earliest_time = Utc::now() + Duration::hours(0 - CONFIG.limit.ingest_allowed_upto);
+
+        // 不能摄取太早的数据
         if timestamp < earliest_time.timestamp_micros() {
             stream_status.status.failed += 1; // to old data, just discard
             stream_status.status.error = super::get_upto_discard_error();
@@ -152,6 +164,7 @@ pub async fn ingest(
             json::Value::Number(timestamp.into()),
         );
 
+        // 添加单条记录  会插入到buf中
         let local_trigger = super::add_valid_record(
             StreamMeta {
                 org_id: org_id.to_string(),
@@ -166,6 +179,7 @@ pub async fn ingest(
         )
         .await;
 
+        // 代表产生了需要告警的东西
         if local_trigger.is_some() {
             trigger = Some(local_trigger.unwrap());
         }
@@ -173,6 +187,8 @@ pub async fn ingest(
 
     // write to file
     let mut stream_file_name = "".to_string();
+
+    // 将buf的数据写入文件
     let mut req_stats = write_file(
         buf,
         thread_id,
@@ -192,7 +208,7 @@ pub async fn ingest(
         ));
     }
 
-    // only one trigger per request, as it updates etcd
+    // only one trigger per request, as it updates etcd  发出通知
     super::evaluate_trigger(trigger, stream_alerts_map).await;
 
     let time = start.elapsed().as_secs_f64();

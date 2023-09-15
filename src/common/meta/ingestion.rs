@@ -66,12 +66,13 @@ impl IngestionResponse {
     }
 }
 
+// 一个检查对象
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StreamSchemaChk {
     pub conforms: bool,
-    pub has_fields: bool,
+    pub has_fields: bool,  // schema是否有字段
     pub has_partition_keys: bool,
-    pub has_metadata: bool,
+    pub has_metadata: bool,  // 只要元数据中有 METADATA_LABEL 为key的数据 就为true
 }
 
 pub const INGESTION_EP: [&str; 11] = [
@@ -91,7 +92,7 @@ pub const INGESTION_EP: [&str; 11] = [
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct BulkResponse {
     pub took: u128,
-    pub errors: bool,
+    pub errors: bool,  // 在一次bulk请求中是否失败了  比如发往某个stream的数据 转换失败了
     pub items: Vec<HashMap<String, BulkResponseItem>>,
 }
 

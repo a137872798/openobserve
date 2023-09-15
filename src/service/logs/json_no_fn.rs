@@ -43,6 +43,7 @@ use crate::{
     service::usage::report_request_usage_stats,
 };
 
+// 同样是json插入  但是没有转换函数
 pub async fn ingest(
     org_id: &str,
     in_stream_name: &str,
@@ -205,6 +206,7 @@ pub async fn handle_grpc_request(
     thread_id: usize,
     request: ExportLogsServiceRequest,
 ) -> Result<HttpResponse, anyhow::Error> {
+
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(

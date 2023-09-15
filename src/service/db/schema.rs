@@ -67,6 +67,7 @@ pub async fn get(
     })
 }
 
+// 从db中查询schema信息
 pub async fn get_from_db(
     org_id: &str,
     stream_name: &str,
@@ -124,6 +125,7 @@ pub async fn get_versions(
     })
 }
 
+// schema数据入库
 pub async fn set(
     org_id: &str,
     stream_name: &str,

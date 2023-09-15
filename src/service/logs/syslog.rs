@@ -36,11 +36,16 @@ use crate::common::meta::{
 use crate::common::utils::{flatten, json, time::parse_timestamp_micro_from_value};
 use crate::service::{db, format_stream_name, ingestion::write_file, schema::stream_schema_exists};
 
+// 接收syslog
 pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     let start = std::time::Instant::now();
+
+    // 拿到该地址的ip地址
     let ip = addr.ip();
+    // 返回该ip相关的route    ip定位到路由 然后路由又绑定了stream  这样就拿到stream信息了   之后的流程就跟处理stream一样了
     let matching_route = get_org_for_ip(ip).await;
 
+    // 获取路由信息
     let route = match matching_route {
         Some(matching_route) => matching_route,
         None => {
@@ -116,6 +121,7 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
 
     let mut buf: AHashMap<String, Vec<String>> = AHashMap::new();
 
+    // 将syslog转换成json
     let parsed_msg = syslog_loose::parse_message(msg);
     let mut value = message_to_value(parsed_msg);
     value = flatten::flatten(&value).unwrap();
@@ -222,6 +228,8 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     )))
 }
 
+
+// 返回包含该ip的route
 async fn get_org_for_ip(ip: std::net::IpAddr) -> Option<SyslogRoute> {
     let mut matching_route = None;
     for (_, route) in SYSLOG_ROUTES.clone() {
@@ -235,7 +243,7 @@ async fn get_org_for_ip(ip: std::net::IpAddr) -> Option<SyslogRoute> {
     matching_route
 }
 
-/// Create a `Value::Map` from the fields of the given syslog message.
+/// Create a `Value::Map` from the fields of the given syslog message.   将syslog转换成json格式
 fn message_to_value(message: Message<&str>) -> json::Value {
     let mut result = json::Map::new();
 

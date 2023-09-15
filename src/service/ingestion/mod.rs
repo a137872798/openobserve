@@ -79,6 +79,7 @@ pub fn compile_vrl_function(func: &str, org_id: &str) -> Result<VRLRuntimeConfig
     }
 }
 
+// 有关vrl转换的逻辑 是 vrl相关的  先忽略
 pub fn apply_vrl_fn(runtime: &mut Runtime, vrl_runtime: &VRLRuntimeConfig, row: &Value) -> Value {
     let mut metadata = vrl::value::Value::from(BTreeMap::new());
     let mut target = TargetValueRef {
@@ -104,23 +105,29 @@ pub fn apply_vrl_fn(runtime: &mut Runtime, vrl_runtime: &VRLRuntimeConfig, row: 
     }
 }
 
+// 获取数据流转换器
 pub async fn get_stream_transforms<'a>(
     org_id: &str,
-    stream_type: StreamType,
+    stream_type: StreamType,  // 数据流类型
     stream_name: &str,
     stream_transform_map: &mut AHashMap<String, Vec<StreamTransform>>,
     stream_vrl_map: &mut AHashMap<String, VRLRuntimeConfig>,
 ) {
     let key = format!("{}/{}/{}", &org_id, stream_type, &stream_name);
+
+    // 代表已经加载了
     if stream_transform_map.contains_key(&key) {
         return;
     }
     let mut _local_trans: Vec<StreamTransform> = vec![];
+
+    // 获取流转换器    stream_vrl_map 中记录的是每个function相关的 vrl
     (_local_trans, *stream_vrl_map) =
         crate::service::ingestion::register_stream_transforms(org_id, stream_type, stream_name);
     stream_transform_map.insert(key, _local_trans);
 }
 
+// 从配置中加载分区键
 pub async fn get_stream_partition_keys(
     stream_name: &str,
     stream_schema_map: &AHashMap<String, Schema>,
@@ -137,10 +144,12 @@ pub async fn get_stream_partition_keys(
     }
 }
 
+// 获取某个stream关联的告警检测对象
 pub async fn get_stream_alerts<'a>(
     key: String,
     stream_alerts_map: &mut AHashMap<String, Vec<Alert>>,
 ) {
+    // 代表已经完成加载了
     if stream_alerts_map.contains_key(&key) {
         return;
     }
@@ -148,19 +157,23 @@ pub async fn get_stream_alerts<'a>(
     if alerts_list.is_none() {
         return;
     }
+
+    // 在摄取数据时检测  所以只需要 is_real_time 为true的就行了
     let mut alerts = alerts_list.unwrap().list.clone();
     alerts.retain(|alert| alert.is_real_time);
     stream_alerts_map.insert(key, alerts);
 }
 
+
+// 产生一个时间key 分离数据 这样在查询时就可以根据时间条件来过滤数据
 pub fn get_wal_time_key(
-    timestamp: i64,
-    partition_keys: &Vec<String>,
-    time_level: PartitionTimeLevel,
-    local_val: &Map<String, Value>,
-    suffix: Option<&str>,
+    timestamp: i64,    // 当前时间
+    partition_keys: &Vec<String>,  // 在stream_meta中记录的分区键
+    time_level: PartitionTimeLevel,   // 时间分区单位
+    local_val: &Map<String, Value>,  // 本次要插入的数据
+    suffix: Option<&str>,   // 一个由schema field计算出来的hash值  会作为后缀添加到时间key上
 ) -> String {
-    // get time file name
+    // get time file name  根据以日/小时为单位 产生不同的key
     let mut time_key = match time_level {
         PartitionTimeLevel::Unset | PartitionTimeLevel::Hourly => Utc
             .timestamp_nanos(timestamp * 1000)
@@ -171,13 +184,18 @@ pub fn get_wal_time_key(
             .format("%Y/%m/%d/00")
             .to_string(),
     };
+
+    // 追加后缀
     if let Some(s) = suffix {
         time_key.push_str(&format!("/{s}"));
     } else {
         time_key.push_str("/default");
     }
+
+    // 将分区值追加到最后
     for key in partition_keys {
         match local_val.get(key) {
+            // 查询影响分区的值
             Some(v) => {
                 let val = if v.is_string() {
                     format!("{}={}", key, v.as_str().unwrap())
@@ -192,6 +210,7 @@ pub fn get_wal_time_key(
     time_key
 }
 
+// TODO 此时产生了 告警 需要发送通知
 pub async fn send_ingest_notification(trigger: Trigger, alert: Alert) {
     log::info!(
         "Sending notification for alert {} {}",
@@ -207,6 +226,9 @@ pub async fn send_ingest_notification(trigger: Trigger, alert: Alert) {
     let _ = triggers::save_trigger(&trigger_to_save.alert_name, &trigger_to_save).await;
 }
 
+/*
+ 获取流转换器
+ */
 pub fn register_stream_transforms(
     org_id: &str,
     stream_type: StreamType,
@@ -216,11 +238,14 @@ pub fn register_stream_transforms(
     let mut stream_vrl_map: AHashMap<String, VRLRuntimeConfig> = AHashMap::new();
     let key = format!("{}/{}/{}", &org_id, stream_type, &stream_name);
 
+    // 转换函数提前插入到DB/cache中了
     if let Some(transforms) = STREAM_FUNCTIONS.get(&key) {
+        // 拿到这组转换函数
         local_trans = (*transforms.list).to_vec();
         local_trans.sort_by(|a, b| a.order.cmp(&b.order));
         for trans in &local_trans {
             let func_key = format!("{}/{}", &stream_name, trans.transform.name);
+            // 调用第三方库 产生一个配置项
             if let Ok(vrl_runtime_config) = compile_vrl_function(&trans.transform.function, org_id)
             {
                 let registry = vrl_runtime_config
@@ -348,24 +373,34 @@ pub fn init_functions_runtime() -> Runtime {
     crate::common::utils::functions::init_vrl_runtime()
 }
 
+// 将数据写入到文件中
 pub fn write_file(
-    buf: AHashMap<String, Vec<String>>,
+    buf: AHashMap<String, Vec<String>>,  // 本次待写入的数据  key 代表分区信息  Vec<String> 代表多条记录
     thread_id: usize,
-    stream_params: StreamParams,
+    stream_params: StreamParams,  // 包含stream的基础信息 比如stream的类型 orgid 什么的
     stream_file_name: &mut String,
     partition_time_level: Option<PartitionTimeLevel>,
 ) -> RequestStats {
     let mut write_buf = BytesMut::new();
     let mut req_stats = RequestStats::default();
+
+    // 遍历数据
     for (key, entry) in buf {
+        // 代表该分区下没有数据
         if entry.is_empty() {
             continue;
         }
+
+        // 写入一个新的分区前 先清空之前的数据
         write_buf.clear();
+
+        // 按行先存储到 buf 中
         for row in &entry {
             write_buf.put(row.as_bytes());
             write_buf.put("\n".as_bytes());
         }
+
+        // 获取文件
         let file = get_or_create(
             thread_id,
             stream_params,
@@ -373,10 +408,15 @@ pub fn write_file(
             &key,
             CONFIG.common.wal_memory_mode_enabled,
         );
+
+        // 设置文件名
         if stream_file_name.is_empty() {
             *stream_file_name = file.full_name();
         }
+        // 将数据写入到文件中
         file.write(write_buf.as_ref());
+
+        // 更新总大小和写入的条数
         req_stats.size += write_buf.len() as f64 / (1024.0 * 1024.0);
         req_stats.records += entry.len() as i64;
     }

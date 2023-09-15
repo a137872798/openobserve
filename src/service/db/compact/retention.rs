@@ -91,7 +91,7 @@ pub async fn get_stream(
     }
 }
 
-// check if stream is deleting from cache
+// check if stream is deleting from cache  检查stream是否已经被标记成删除
 pub fn is_deleting_stream(
     org_id: &str,
     stream_name: &str,

@@ -90,6 +90,7 @@ pub fn parse_str_to_time(s: &str) -> Result<DateTime<Utc>, anyhow::Error> {
     Ok(ret)
 }
 
+// 转换成纳秒
 #[inline(always)]
 pub fn parse_timestamp_micro_from_value(v: &json::Value) -> Result<i64, anyhow::Error> {
     let n = match v {

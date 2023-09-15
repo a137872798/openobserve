@@ -43,6 +43,7 @@ pub fn get_schema_key_xxh3(schema: &Schema) -> String {
     get_fields_key_xxh3(&schema.to_cloned_fields())
 }
 
+// 计算一个hash值
 pub fn get_fields_key_xxh3(fields: &[Field]) -> String {
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
