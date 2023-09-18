@@ -25,7 +25,7 @@ fn mk_key(org_id: &str, stream_type: StreamType, stream_name: &str) -> String {
     format!("/compact/files/{org_id}/{stream_type}/{stream_name}")
 }
 
-// file_list 有一个偏移量信息 file也有
+// 获取file merge的偏移量 如果没有 则获取file_list的merge偏移量  merge包含2部分  file的merge是file_list的前置条件
 pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType) -> (i64, String) {
     let key = mk_key(org_id, stream_type, stream_name);
     if let Some(offset) = CACHES.get(&key) {
@@ -53,6 +53,7 @@ pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType
     (offset, node)
 }
 
+// 这个是file merge时使用的偏移量
 pub async fn set_offset(
     org_id: &str,
     stream_name: &str,
@@ -77,12 +78,11 @@ pub async fn del_offset(
         .map_err(Into::into)
 }
 
-// 列举所有偏移量信息
+// 这个是file_list merge时使用的偏移量
 pub async fn list_offset() -> Result<Vec<(String, i64)>, anyhow::Error> {
     let mut items = Vec::new();
     let db = &infra_db::DEFAULT;
 
-    // 相当于得到所有stream的偏移量 并返回
     let key = "/compact/files/";
     let ret = db.list(key).await?;
     for (item_key, item_value) in ret {
@@ -99,6 +99,7 @@ pub async fn list_offset() -> Result<Vec<(String, i64)>, anyhow::Error> {
     Ok(items)
 }
 
+// 将cache 同步到db
 pub async fn sync_cache_to_db() -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     for item in CACHES.clone().iter() {

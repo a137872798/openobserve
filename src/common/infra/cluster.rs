@@ -328,9 +328,11 @@ pub fn get_cached_online_querier_nodes() -> Option<Vec<Node>> {
     get_cached_nodes(|node| node.status == NodeStatus::Online && is_querier(&node.role))
 }
 
+// 通过集群状态缓存 获取节点信息
 #[inline(always)]
 pub fn get_cached_online_query_nodes() -> Option<Vec<Node>> {
     get_cached_nodes(|node| {
+        // 摄取节点 相当于 read + write   查询节点只是 read
         node.status == NodeStatus::Online && (is_querier(&node.role) || is_ingester(&node.role))
     })
 }

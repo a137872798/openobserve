@@ -34,6 +34,7 @@ impl FS {
         Self::default()
     }
 
+    // 截取得到 /$$/ 后面的部分
     fn format_location(&self, location: &Path) -> Path {
         let mut path = location.to_string();
         if let Some(p) = path.find("/$$/") {
@@ -42,6 +43,7 @@ impl FS {
         path.into()
     }
 
+    // 从内存中获取数据
     async fn get_cache(&self, location: &Path) -> Option<Bytes> {
         let path = location.to_string();
         let data = file_data::get(&path);
@@ -56,12 +58,15 @@ impl std::fmt::Display for FS {
     }
 }
 
+// 使用内存来模拟 ObjectStore
 #[async_trait]
 impl ObjectStore for FS {
+
     async fn get(&self, location: &Path) -> Result<GetResult> {
         let location = &self.format_location(location);
         let data = match self.get_cache(location).await {
             Some(data) => data,
+            // 不能通过缓存的时候 直接访问ObjectStore上的文件
             None => return storage::DEFAULT.get(location).await,
         };
         Ok(GetResult::Stream(
@@ -69,6 +74,7 @@ impl ObjectStore for FS {
         ))
     }
 
+    // 该方法区别就是额外支持一些参数
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let location = &self.format_location(location);
         let data = match self.get_cache(location).await {
@@ -80,12 +86,15 @@ impl ObjectStore for FS {
         ))
     }
 
+    // 根据范围查询数据   这个range是bytes的范围
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
         let location = &self.format_location(location);
         let data = match self.get_cache(location).await {
             Some(data) => data,
             None => return storage::DEFAULT.get_range(location, range).await,
         };
+
+        // end 不能超过length
         if range.end > data.len() {
             let file = location.to_string();
             let file_meta = crate::service::file_list::get_file_meta(&file)
@@ -106,14 +115,19 @@ impl ObjectStore for FS {
         Ok(data.slice(range))
     }
 
+    // 返回多个范围
     async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> Result<Vec<Bytes>> {
         let location = &self.format_location(location);
+
+        // 同上先走缓存 然后直接走ObjectStore
         let data = match self.get_cache(location).await {
             Some(data) => data,
             None => return storage::DEFAULT.get_ranges(location, ranges).await,
         };
         let mut data_slices = Vec::with_capacity(ranges.len());
         for range in ranges.iter() {
+
+            // 范围的声明不应该超过总长度
             if range.end > data.len() {
                 let file = location.to_string();
                 let file_meta = crate::service::file_list::get_file_meta(&file)
@@ -136,6 +150,7 @@ impl ObjectStore for FS {
         Ok(data_slices)
     }
 
+    // 获取元数据
     async fn head(&self, location: &Path) -> Result<ObjectMeta> {
         let location = &self.format_location(location);
         let data = match self.get_cache(location).await {
@@ -150,9 +165,11 @@ impl ObjectStore for FS {
         })
     }
 
+    //
     #[tracing::instrument(name = "datafusion::storage::memory::list", skip_all)]
     async fn list(&self, prefix: Option<&Path>) -> Result<BoxStream<'_, Result<ObjectMeta>>> {
         let key = prefix.unwrap().to_string();
+        // prefix被看作是前缀 查询相关的一组元数据
         let objects = super::file_list::get(&key).unwrap();
         let values = objects
             .iter()

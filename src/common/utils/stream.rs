@@ -22,6 +22,7 @@ use crate::common::infra::config::{CONFIG, FILE_EXT_JSON};
 use crate::common::meta::{common::FileMeta, StreamType};
 use crate::common::utils::json;
 
+// 默认支持全文检索的字段
 pub const SQL_FULL_TEXT_SEARCH_FIELDS: [&str; 5] = ["log", "message", "msg", "content", "data"];
 
 #[inline(always)]

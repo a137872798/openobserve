@@ -54,6 +54,7 @@ impl FileData {
         }
     }
 
+    // 读取map中的数据
     pub fn get(&mut self, file: &str) -> Option<Bytes> {
         self.data.get(file).cloned()
     }
@@ -122,8 +123,10 @@ impl FileData {
     }
 }
 
+// 使用内存来模拟文件数据
 #[inline]
 pub fn get(file: &str) -> Option<Bytes> {
+    // 不支持内存缓存
     if !CONFIG.memory_cache.enabled {
         return None;
     }

@@ -162,11 +162,11 @@ pub struct Response {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub took_detail: Option<ResponseTook>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<Object>)]  // 表示sql直接查询到的结果
     pub hits: Vec<json::Value>,
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    #[schema(value_type = Object)]
+    #[schema(value_type = Object)]  // 表示各聚合函数查询到的结果 
     pub aggs: HashMap<String, Vec<json::Value>>,
     pub total: usize,
     pub from: usize,

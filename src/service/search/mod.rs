@@ -45,14 +45,16 @@ pub(crate) mod sql;
 pub(crate) static QUEUE_LOCKER: Lazy<Arc<Mutex<bool>>> =
     Lazy::new(|| Arc::new(Mutex::const_new(false)));
 
+// 发起一个查询操作
 #[tracing::instrument(name = "service:search:enter", skip(req))]
 pub async fn search(
-    org_id: &str,
-    stream_type: StreamType,
-    req: &search::Request,
+    org_id: &str,  // 查询的stream相关的org
+    stream_type: StreamType,  // 表示查询的是什么类型的流
+    req: &search::Request,  // 其中包含了查询条件
 ) -> Result<search::Response, Error> {
     let mut req: cluster_rpc::SearchRequest = req.to_owned().into();
     req.org_id = org_id.to_string();
+    // 代表本次的请求是由用户发起的
     req.stype = cluster_rpc::SearchType::User as i32;
     req.stream_type = stream_type.to_string();
     tokio::task::spawn(async move { search_in_cluster(req).await })
@@ -60,8 +62,12 @@ pub async fn search(
         .map_err(server_internal_error)?
 }
 
+
+// 获取查询针对的时间跨度
 async fn get_times(sql: &sql::Sql, stream_type: StreamType) -> (i64, i64) {
     let (mut time_min, mut time_max) = sql.meta.time_range.unwrap();
+
+    // 表示没有指定时间下限  那么就采用schema的创建时间  也就是第一条记录进入的时间
     if time_min == 0 {
         // get created_at from schema
         let schema = db::schema::get(&sql.org_id, &sql.stream_name, stream_type)
@@ -74,19 +80,26 @@ async fn get_times(sql: &sql::Sql, stream_type: StreamType) -> (i64, i64) {
                 .map_or(0, |v| v.parse::<i64>().unwrap_or(0));
         }
     }
+
+    // 最晚时间就是当前时间
     if time_max == 0 {
         time_max = chrono::Utc::now().timestamp_micros();
     }
     (time_min, time_max)
 }
 
+// 获取某个分区下的文件列表
 #[tracing::instrument(skip(sql), fields(org_id = sql.org_id, stream_name = sql.stream_name))]
 async fn get_file_list(
     sql: &sql::Sql,
     stream_type: StreamType,
-    time_level: PartitionTimeLevel,
+    time_level: PartitionTimeLevel,   // file_list的划分级别
 ) -> Vec<FileKey> {
+
+    // 获取时间范围
     let (time_min, time_max) = get_times(sql, stream_type).await;
+
+    // 获取该时间范围内的所有 file_list文件
     let file_list = match file_list::query(
         &sql.org_id,
         &sql.stream_name,
@@ -103,14 +116,20 @@ async fn get_file_list(
 
     let mut files = Vec::with_capacity(file_list.len());
     for file in file_list {
+
+        // 检查该file是否匹配  其中包含时间范围的检查
         if sql.match_source(&file, false, false, stream_type).await {
             files.push(file.to_owned());
         }
     }
+
+    // 这里得到的只是 file_list文件
     files.sort_by(|a, b| a.key.cmp(&b.key));
     files
 }
 
+
+// 代表在集群中处理请求
 #[tracing::instrument(
     name = "service:search:cluster",
     skip(req),
@@ -119,20 +138,22 @@ async fn get_file_list(
 async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Response, Error> {
     let start = std::time::Instant::now();
 
-    // handle request time range
+    // handle request time range   表示查询的数据类型
     let stream_type = StreamType::from(req.stream_type.as_str());
+    // 改写sql  meta中还有内部的aggs-sql
     let meta = sql::Sql::new(&req).await?;
 
-    // get a cluster search queue lock
+    // get a cluster search queue lock    从代码上观察 所有节点统一进行一个查询 只有该查询结束后才能发起下个查询
     let locker = dist_lock::lock("search/cluster_queue", 0).await?;
     let took_wait = start.elapsed().as_millis() as usize;
 
-    // get nodes from cluster
+    // get nodes from cluster   获取当前集群可用的所有节点  如果数据是分散在各个节点 那么查询不就有缺数据的可能了吗?
     let mut nodes = cluster::get_cached_online_query_nodes().unwrap();
     // sort nodes by node_id this will improve hit cache ratio
     nodes.sort_by_key(|x| x.id);
     let nodes = nodes;
 
+    // 可以查询的节点数量
     let querier_num = match nodes
         .iter()
         .filter(|node| cluster::is_querier(&node.role))
@@ -142,13 +163,18 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         n => n,
     };
 
+    // 获取stream相关的分区级别
     let stream_settings = stream::stream_settings(&meta.schema).unwrap_or_default();
     let partition_time_level =
         stream::unwrap_partition_time_level(stream_settings.partition_time_level, stream_type);
 
+    // 应该是根据meta 找到时间跨度 然后转换成一组 file_list 再读取这些文件得到文件下载地址 进而读取数据
     let file_list = get_file_list(&meta, stream_type, partition_time_level).await;
     let file_num = file_list.len();
+
+    // 代表每个节点处理一部分
     let offset = if querier_num >= file_num {
+        // 一个节点查询一个file_list
         1
     } else {
         (file_num / querier_num) + 1
@@ -159,9 +185,11 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     );
 
     // partition request, here plus 1 second, because division is integer, maybe lose some precision
+    // 作为查询的发起者 为本次查询分配了一个id
     let mut session_id = Uuid::new_v4().to_string();
     let job = cluster_rpc::Job {
         session_id: session_id.clone(),
+        // 保留6位作为 jobId
         job: session_id.split_off(30), // take the last 6 characters as job id
         stage: 0,
         partition: 0,
@@ -170,16 +198,30 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     // make cluster request
     let mut tasks = Vec::new();
     let mut offset_start: usize = 0;
+
+    // 遍历每个节点
     for (partition_no, node) in nodes.iter().cloned().enumerate() {
         let mut req = req.clone();
         let mut job = job.clone();
+        // 设置job对应的分区号
         job.partition = partition_no as i32;
+        // 关联req
         req.job = Some(job);
+        // 设置请求类型为 wal      user类型查询就是要做请求负载  wal类型就是查询本地日志  cluster类型应该是要做请求转发
         req.stype = cluster_rpc::SearchType::WalOnly as i32;
+
+        // 能参与查询的节点 可以是查询节点或者摄取节点
         let is_querier = cluster::is_querier(&node.role);
+
+        // 不是查询节点好像有点奇怪?
         if is_querier {
+
+            // 外层遍历每个节点  内层每个节点直接推进offset
             if offset_start < file_num {
+                // 因为该请求是从本节点转发出去的 所以是cluster
                 req.stype = cluster_rpc::SearchType::Cluster as i32;
+
+                // 设置一部分 file_list
                 req.file_list = file_list[offset_start..min(offset_start + offset, file_num)]
                     .to_vec()
                     .iter()
@@ -191,17 +233,24 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
             }
         }
 
+        // 服务间调用是通过 grpc
         let node_addr = node.grpc_addr.clone();
         let grpc_span = info_span!("service:search:cluster:grpc_search", org_id = req.org_id);
+
+        // 准备好 grpc请求
         let task = tokio::task::spawn(
             async move {
                 let org_id: MetadataValue<_> = req
                     .org_id
                     .parse()
                     .map_err(|_| Error::Message("invalid org_id".to_string()))?;
+
                 let mut request = tonic::Request::new(req);
+
+                // 设置grpc的超时时间
                 request.set_timeout(Duration::from_secs(CONFIG.grpc.timeout));
 
+                // TODO
                 opentelemetry::global::get_text_map_propagator(|propagator| {
                     propagator.inject_context(
                         &tracing::Span::current().context(),
@@ -209,9 +258,12 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                     )
                 });
 
+                // 发起grpc请求需要token验证
                 let token: MetadataValue<_> = cluster::get_internal_grpc_token()
                     .parse()
                     .map_err(|_| Error::Message("invalid token".to_string()))?;
+
+                // 产生一个发起grpc请求的通道  底层也就是tcp连接
                 let channel = Channel::from_shared(node_addr)
                     .unwrap()
                     .connect()
@@ -220,18 +272,25 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                         log::error!("search->grpc: node: {}, connect err: {:?}", node.id, err);
                         server_internal_error("connect search node error")
                     })?;
+
+                // 设置拦截器
                 let mut client = cluster_rpc::search_client::SearchClient::with_interceptor(
                     channel,
                     move |mut req: Request<()>| {
+                        // 往请求上设置 token 和 org_id
                         req.metadata_mut().insert("authorization", token.clone());
                         req.metadata_mut()
                             .insert(CONFIG.grpc.org_header_key.as_str(), org_id.clone());
                         Ok(req)
                     },
                 );
+
+                // 设置数据压缩方式
                 client = client
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
+
+                // 调用函数 得到结果  注意这只是单个节点的结果  单次查询可能会用到多个节点
                 let response: cluster_rpc::SearchResponse = match client.search(request).await {
                     Ok(res) => res.into_inner(),
                     Err(err) => {
@@ -257,6 +316,8 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
             }
             .instrument(grpc_span),
         );
+
+        // 任务的结果是一个resp
         tasks.push(task);
     }
 
@@ -277,22 +338,29 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     // search done, release lock
     dist_lock::unlock(&locker).await?;
 
-    // merge multiple instances data
-    let mut scan_stats = ScanStats::new();
+    // merge multiple instances data   此时已经在各节点上完成了查询工作
+    let mut scan_stats = ScanStats::new();   // 进行一些统计工作
+
+    // 存储每个节点的查询结果
     let mut batches: HashMap<String, Vec<Vec<RecordBatch>>> = HashMap::new();
+
     let sql = Arc::new(meta);
+
+    // 挨个处理每个结果
     for resp in results {
         scan_stats.add(&resp.scan_stats.as_ref().unwrap().into());
         // handle hits
         let value = batches.entry("query".to_string()).or_default();
         if !resp.hits.is_empty() {
             let buf = Cursor::new(resp.hits);
+            // ipc 是一种类似序列化的东西
             let reader = ipc::reader::FileReader::try_new(buf, None).unwrap();
             let batch = reader.into_iter().map(Result::unwrap).collect::<Vec<_>>();
             value.push(batch);
         }
         // handle aggs
         for agg in resp.aggs {
+            // 存储每个agg的结果集
             let value = batches.entry(format!("agg_{}", agg.name)).or_default();
             if !agg.hits.is_empty() {
                 let buf = Cursor::new(agg.hits);
@@ -303,8 +371,12 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         }
     }
 
-    // merge all batches
+    // 此时数据已经从resp中读取出来了
+
+    // merge all batches    batches中存储了所有结果集
     for (name, batch) in batches.iter_mut() {
+
+        // 拿到对应的sql
         let merge_sql = if name == "query" {
             sql.origin_sql.clone()
         } else {
@@ -314,6 +386,8 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                 .0
                 .clone()
         };
+
+        // 这里进行数据合并
         *batch = match datafusion::exec::merge(
             &sql.org_id,
             sql.meta.offset,
@@ -332,18 +406,22 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         };
     }
 
-    // final result
+    // final result  设置查询的偏移量和数量
     let mut result = search::Response::new(sql.meta.offset, sql.meta.limit);
 
     // hits
     let query_type = req.query.as_ref().unwrap().query_type.to_lowercase();
     let empty_vec = vec![];
+
+    // 获取原始数据集
     let batches_query = match batches.get("query") {
         Some(batches) => batches,
         None => &empty_vec,
     };
     if !batches_query.is_empty() {
         let batches_query_ref: Vec<&RecordBatch> = batches_query[0].iter().collect();
+
+        // 将列格式转换成行格式
         let json_rows = match arrow_json::writer::record_batches_to_json_rows(&batches_query_ref) {
             Ok(res) => res,
             Err(err) => {
@@ -352,14 +430,17 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                 )))
             }
         };
+
+        // 转换成 json格式
         let mut sources: Vec<json::Value> =
             json_rows.into_iter().map(json::Value::Object).collect();
 
-        // handle metrics response
+        // handle metrics response  TODO
         if query_type == "metrics" {
             sources = handle_metrics_response(sources);
         }
 
+        // 添加json记录
         if sql.uses_zo_fn {
             for source in sources {
                 result.add_hit(&flatten::flatten(&source).unwrap());
@@ -371,7 +452,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         }
     }
 
-    // aggs
+    // aggs填充聚合结果
     for (name, batch) in batches {
         if name == "query" || batch.is_empty() {
             continue;
@@ -392,13 +473,14 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         }
     }
 
-    // total
+    // total  聚合函数会自动携带一个_count
     let total = match result.aggs.get("_count") {
         Some(v) => v.get(0).unwrap().get("num").unwrap().as_u64().unwrap() as usize,
         None => result.hits.len(),
     };
     result.aggs.remove("_count");
 
+    // 往结果中填充一些信息
     result.set_total(total);
     result.set_cluster_took(start.elapsed().as_millis() as usize, took_wait);
     result.set_file_count(scan_stats.files as usize);
@@ -459,12 +541,12 @@ fn handle_metrics_response(sources: Vec<json::Value>) -> Vec<json::Value> {
     new_sources
 }
 
-/// match a source is a valid file or not
+/// match a source is a valid file or not   判断某个source与某个stream 是否匹配
 pub async fn match_source(
     stream: StreamParams<'_>,
     time_range: Option<(i64, i64)>,
     filters: &[(&str, &str)],
-    source: &FileKey,
+    source: &FileKey,    // stream相关的file_list文件
     is_wal: bool,
     match_min_ts_only: bool,
 ) -> bool {
@@ -474,7 +556,7 @@ pub async fn match_source(
         stream_type,
     } = stream;
 
-    // match org_id & table
+    // match org_id & table   要求三要素匹配
     if !source
         .key
         .starts_with(format!("files/{}/{}/{}/", org_id, stream_type, stream_name).as_str())
@@ -482,7 +564,7 @@ pub async fn match_source(
         return false;
     }
 
-    // check partition key
+    // check partition key  TODO
     if !filter_source_by_partition_key(&source.key, filters) {
         return false;
     }
@@ -503,7 +585,7 @@ pub async fn match_source(
         source.key
     );
 
-    // match partition clause
+    // match partition clause  对时间条件进行检查
     if let Some((time_min, time_max)) = time_range {
         if match_min_ts_only && time_min > 0 {
             return source.meta.min_ts >= time_min && source.meta.min_ts < time_max;

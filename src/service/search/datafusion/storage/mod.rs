@@ -19,11 +19,13 @@ pub mod memory; // fsm: File system with memory cache
 pub mod nocache; // fsn: File system without memory cahce
 pub mod tmpfs;
 
+
+// 描述几种存储类型
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageType {
-    FsMemory,  // fsm
-    FsNoCache, // fsn
-    Tmpfs,
+    FsMemory,  // fsm   代表先走内存缓存 没有再走文件
+    FsNoCache, // fsn   直接走文件
+    Tmpfs,     //       使用临时文件
 }
 
 /// A specialized `Error` for in-memory object store-related errors

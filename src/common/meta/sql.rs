@@ -69,6 +69,8 @@ pub struct Offset<'a>(pub(crate) &'a SqlOffset);
 pub struct Limit<'a>(pub(crate) &'a SqlExpr);
 
 impl Sql {
+
+    // 通过一个sql语句来构造sql对象
     pub fn new(sql: &str) -> Result<Sql, anyhow::Error> {
         if sql.is_empty() {
             return Err(anyhow::anyhow!("SQL is empty"));
@@ -95,6 +97,7 @@ impl Sql {
 impl TryFrom<&Statement> for Sql {
     type Error = anyhow::Error;
 
+    // 通过读取statement的各部分 产生本对象
     fn try_from(sql: &Statement) -> Result<Self, Self::Error> {
         match sql {
             // just take case of: query (select ... from ... where ...)

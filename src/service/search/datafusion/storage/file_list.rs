@@ -21,6 +21,7 @@ use crate::common::meta::common::FileKey;
 
 pub static FILES: Lazy<RwHashMap<String, Vec<ObjectMeta>>> = Lazy::new(Default::default);
 
+// 根据会话id 查询一组外部存储元数据  (从缓存中获取)
 pub fn get(session_id: &str) -> Result<Vec<ObjectMeta>, anyhow::Error> {
     let data = match FILES.get(session_id) {
         Some(data) => data,
@@ -29,10 +30,12 @@ pub fn get(session_id: &str) -> Result<Vec<ObjectMeta>, anyhow::Error> {
     Ok(data.value().clone())
 }
 
+// 上面的反向操作
 pub async fn set(session_id: &str, files: &[FileKey]) {
     let mut values = Vec::with_capacity(files.len());
     for file in files {
         let modified = Utc.timestamp_nanos(file.meta.max_ts * 1000);
+        // 会话id + 文件名 得到 ObjectStore的name
         let file_name = format!("/{}/$$/{}", session_id, file.key);
         values.push(ObjectMeta {
             location: file_name.into(),
@@ -44,6 +47,7 @@ pub async fn set(session_id: &str, files: &[FileKey]) {
     FILES.insert(session_id.to_string(), values);
 }
 
+// 清空某个会话id的缓存数据
 pub fn clear(session_id: &str) {
     let keys = FILES
         .iter()

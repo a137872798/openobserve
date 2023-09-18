@@ -14,7 +14,7 @@
 
 use crate::common::infra::db as infra_db;
 
-// 获取偏移量信息
+// 这应该是描述 所有stream此时的压缩偏移量
 pub async fn get_offset() -> Result<i64, anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/compact/file_list/offset";
@@ -70,6 +70,7 @@ pub async fn get_process(offset: i64) -> String {
     }
 }
 
+// 设置处理该file_list的节点
 pub async fn set_process(offset: i64, node: &str) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = format!("/compact/file_list/process/{offset}");
