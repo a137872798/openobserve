@@ -765,6 +765,7 @@ fn merge_rewrite_sql(sql: &str, schema: Arc<Schema>) -> Result<String> {
     Ok(sql)
 }
 
+// 从某个文件读取数据 转换成parquet格式
 pub async fn convert_parquet_file(
     session_id: &str,
     buf: &mut Vec<u8>,
@@ -773,10 +774,10 @@ pub async fn convert_parquet_file(
     file_type: FileType,
 ) -> Result<()> {
     let start = std::time::Instant::now();
-    // query data
+    // query data   产生查询/解析用的上下文
     let ctx = prepare_datafusion_context()?;
 
-    // Configure listing options
+    // Configure listing options   这里是指此时文件的内容格式吗
     let listing_options = match file_type {
         FileType::PARQUET => {
             let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
@@ -806,10 +807,12 @@ pub async fn convert_parquet_file(
         }
     };
 
+    // 表示使用该schema 解析该目录下所有文件
     let config = ListingTableConfig::new(prefix)
         .with_listing_options(listing_options)
         .with_schema(schema.clone());
 
+    // 将数据文件看作表
     let table = ListingTable::try_new(config)?;
     ctx.register_table("tbl", Arc::new(table))?;
 
@@ -818,6 +821,8 @@ pub async fn convert_parquet_file(
         "SELECT * FROM tbl ORDER BY {} DESC",
         CONFIG.common.column_timestamp
     );
+
+    // 执行sql 产生执行计划
     let mut df = match ctx.sql(&query_sql).await {
         Ok(df) => df,
         Err(e) => {
@@ -829,6 +834,8 @@ pub async fn convert_parquet_file(
             return Err(e);
         }
     };
+
+    // 代表查询到的结果 某些field 需要按rule进行解读
     if !rules.is_empty() {
         let fields = df.schema().fields();
         let mut exprs = Vec::with_capacity(fields.len());
@@ -837,6 +844,8 @@ pub async fn convert_parquet_file(
                 exprs.push(col(field.name()));
                 continue;
             }
+
+            // 产生一个映射规则
             exprs.push(match rules.get(field.name()) {
                 Some(rule) => Expr::Alias(Alias::new(
                     cast(col(field.name()), rule.clone()),
@@ -845,11 +854,16 @@ pub async fn convert_parquet_file(
                 None => col(field.name()),
             });
         }
+        // 为执行计划追加一层映射
         df = df.select(exprs)?;
     }
     let schema: Schema = df.schema().into();
     let schema = Arc::new(schema);
+
+    // 产生结果集
     let batches = df.collect().await?;
+
+    // 产生一个以arrow格式存储数据的对象 
     let mut writer = super::new_writer(buf, &schema, None, None);
     for batch in batches {
         writer.write(&batch)?;
@@ -866,8 +880,9 @@ pub async fn convert_parquet_file(
     Ok(())
 }
 
+/// 将该目录下所有parquet文件合并
 pub async fn merge_parquet_files(
-    session_id: &str,
+    session_id: &str,  // 目录名
     buf: &mut Vec<u8>,
     schema: Arc<Schema>,
     stream_type: StreamType,
@@ -891,7 +906,7 @@ pub async fn merge_parquet_files(
     let table = ListingTable::try_new(config)?;
     ctx.register_table("tbl", Arc::new(table))?;
 
-    // get meta data
+    // get meta data  先查元数据
     let meta_sql = format!(
         "SELECT MIN({}) as min_ts, MAX({}) as max_ts, COUNT(1) as num_records FROM tbl",
         CONFIG.common.column_timestamp, CONFIG.common.column_timestamp
@@ -899,11 +914,13 @@ pub async fn merge_parquet_files(
     let df = ctx.sql(&meta_sql).await?;
     let batches = df.collect().await?;
     let batches_ref: Vec<&RecordBatch> = batches.iter().collect();
+    // 将内存格式转换成json
     let result = arrowJson::writer::record_batches_to_json_rows(&batches_ref).unwrap();
     let record = result.first().unwrap();
     let file_meta = if record.is_empty() {
         FileMeta::default()
     } else {
+        // 产生元数据
         FileMeta {
             min_ts: record["min_ts"].as_i64().unwrap(),
             max_ts: record["max_ts"].as_i64().unwrap(),
@@ -921,14 +938,18 @@ pub async fn merge_parquet_files(
     let df = ctx.sql(&query_sql).await?;
     let schema: Schema = df.schema().into();
     let schema = Arc::new(schema);
+    // 这时已经从内存加载到全部数据了
     let batches = df.collect().await?;
 
+    // TODO
     let bf_fields =
         if CONFIG.common.traces_bloom_filter_enabled && stream_type == StreamType::Traces {
             Some(vec![COLUMN_TRACE_ID])
         } else {
             None
         };
+
+    // 因为多个文件的数据已经加载出来了 重新写入其实就是触发了合并
     let mut writer = super::new_writer(buf, &schema, None, bf_fields);
     for batch in batches {
         writer.write(&batch)?;
@@ -945,6 +966,7 @@ pub async fn merge_parquet_files(
     Ok(file_meta)
 }
 
+// 创建会话配置
 pub fn create_session_config() -> SessionConfig {
     // Enable parquet predicate pushdown optimization
     let mut options = ConfigOptions::new();
@@ -960,6 +982,7 @@ pub fn create_session_config() -> SessionConfig {
         .with_information_schema(true)
 }
 
+// 产生一个转换parquet时使用的环境
 pub fn create_runtime_env() -> Result<RuntimeEnv> {
     let object_store_registry = DefaultObjectStoreRegistry::new();
 
@@ -993,6 +1016,7 @@ pub fn create_runtime_env() -> Result<RuntimeEnv> {
     RuntimeEnv::new(rn_config)
 }
 
+// 获得转换用的上下文环境
 pub fn prepare_datafusion_context() -> Result<SessionContext, DataFusionError> {
     let runtime_env = create_runtime_env()?;
     let session_config = create_session_config();

@@ -122,13 +122,18 @@ pub async fn get_streams(
     indices_res
 }
 
+// 需要传入schema 以及 stream_name 查询 stream
 pub fn stream_res(
     stream_name: &str,
     stream_type: StreamType,
     schema: Schema,
     stats: Option<StreamStats>,
 ) -> Stream {
+
+    // 获取存储模式 描述数据存储在本地 或者远端  不过在数据写入时 总是会先进入本地磁盘  应该是有后台任务将数据传输到远端
     let storage_type = if is_local_disk_storage() { LOCAL } else { S3 };
+
+    // 将schema转换成 stream_property
     let mappings = schema
         .fields()
         .iter()
@@ -142,8 +147,11 @@ pub fn stream_res(
         Some(v) => v,
         None => StreamStats::default(),
     };
+
+    // 获取该schema的创建时间
     stats.created_at = stream_created(&schema).unwrap_or_default();
 
+    // TODO 先忽略测量类型的stream
     let metrics_meta = if stream_type == StreamType::Metrics {
         let mut meta = get_prom_metadata_from_schema(&schema).unwrap_or(prom::Metadata {
             metric_type: prom::MetricType::Empty,
@@ -163,8 +171,10 @@ pub fn stream_res(
         None
     };
 
+    // 从schema的元数据中 加载出 stream_settings
     let mut settings = stream_settings(&schema).unwrap_or_default();
     // special handling for metrics streams
+    // 需要设置一个默认的分区级别
     if settings.partition_time_level.unwrap_or_default() == PartitionTimeLevel::Unset {
         settings.partition_time_level = Some(unwrap_partition_time_level(
             settings.partition_time_level,
@@ -315,6 +325,7 @@ fn transform_stats(stats: &mut StreamStats) -> StreamStats {
     *stats
 }
 
+// 获取stream的创建时间
 pub fn stream_created(schema: &Schema) -> Option<i64> {
     schema
         .metadata()
@@ -332,6 +343,7 @@ pub fn stream_settings(schema: &Schema) -> Option<StreamSettings> {
         .map(|v| StreamSettings::from(v.as_str()))
 }
 
+// 产生一个默认的分区级别   小时或者天
 pub fn unwrap_partition_time_level(
     level: Option<PartitionTimeLevel>,
     stream_type: StreamType,
@@ -339,6 +351,7 @@ pub fn unwrap_partition_time_level(
     match level {
         Some(l) => l,
         None => match stream_type {
+            // 从配置中获取
             StreamType::Logs => PartitionTimeLevel::from(CONFIG.limit.logs_file_retention.as_str()),
             StreamType::Metrics => {
                 PartitionTimeLevel::from(CONFIG.limit.metrics_file_retention.as_str())

@@ -48,6 +48,7 @@ pub async fn get(
     }
 
     let db = &infra_db::DEFAULT;
+    // 无法从缓存中获取的情况 就从db中查询
     Ok(match db.get(&key).await {
         Err(_) => {
             // REVIEW: shouldn't we report the error?
@@ -461,9 +462,11 @@ pub async fn cache_enrichment_tables() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 每个schema有出现的时间  这里选该时间段有效的最后一个schema
 pub fn filter_schema_version_id(schemas: &[Schema], _start_dt: i64, end_dt: i64) -> Option<usize> {
     for (i, schema) in schemas.iter().enumerate() {
         let metadata = schema.metadata();
+        // 每个schema有记录自己的有效时间
         let schema_end_dt: i64 = metadata
             .get("end_dt")
             .unwrap_or(&"0".to_string())
@@ -476,8 +479,11 @@ pub fn filter_schema_version_id(schemas: &[Schema], _start_dt: i64, end_dt: i64)
     None
 }
 
+// 从缓存中获取所有的组织
 pub fn list_organizations_from_cache() -> Vec<String> {
     let mut names = AHashSet::new();
+
+    // schema的命名中包含org的部分
     for schema in STREAM_SCHEMAS.iter() {
         if !schema.key().contains('/') {
             continue;
@@ -490,6 +496,7 @@ pub fn list_organizations_from_cache() -> Vec<String> {
     names.into_iter().collect::<Vec<String>>()
 }
 
+// 从缓存中获取该组织该类型下所有stream
 pub fn list_streams_from_cache(org_id: &str, stream_type: StreamType) -> Vec<String> {
     let mut names = AHashSet::new();
     for schema in STREAM_SCHEMAS.iter() {
@@ -501,10 +508,14 @@ pub fn list_streams_from_cache(org_id: &str, stream_type: StreamType) -> Vec<Str
         if !org_id.eq(cur_org_id) {
             continue;
         }
+
+        // 第二部分代表类型
         let cur_stream_type = StreamType::from(columns[1]);
         if !stream_type.eq(&cur_stream_type) {
             continue;
         }
+
+        // 第三部分对应stream_name
         let cur_stream_name = columns[2].to_string();
         names.insert(cur_stream_name);
     }

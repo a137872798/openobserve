@@ -29,7 +29,8 @@ static EVENTS: Lazy<RwLock<ahash::AHashMap<String, EventChannel>>> =
 
 type EventChannel = Arc<mpsc::UnboundedSender<Vec<FileKey>>>;
 
-/// send an event to broadcast, will create a new channel for each nodes   将标识一组文件的信息发送到目标节点
+/// send an event to broadcast, will create a new channel for each nodes
+/// 将file_list的信息同步到其他节点
 pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), anyhow::Error> {
 
     // 单机模式不需要任何数据同步

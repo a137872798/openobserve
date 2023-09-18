@@ -33,7 +33,7 @@ use crate::common::meta::{
 
 use crate::common::utils::{flatten, json, time::parse_timestamp_micro_from_value};
 use crate::service::ingestion::grpc::get_val;
-use crate::service::{db, format_stream_name, ingestion::write_file, schema::stream_schema_exists};
+use crate::service::{db, format_stream_name, ingestion::, schema::stream_schema_exists};
 use crate::{
     common::meta::{
         alert::{Alert, Trigger},
@@ -153,7 +153,7 @@ pub async fn ingest(
 
     // write to file
     let mut stream_file_name = "".to_string();
-    let _ = write_file(
+    let _ = (
         buf,
         thread_id,
         StreamParams {

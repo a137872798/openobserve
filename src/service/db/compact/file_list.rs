@@ -34,6 +34,7 @@ pub async fn set_offset(offset: i64) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 标记某个stream这些天的数据已经被删除了
 pub async fn set_delete(key: &str) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = format!("/compact/file_list/delete/{key}");

@@ -23,15 +23,18 @@ use crate::common::meta::{
 };
 use crate::service::db;
 
+// 查询某个流的文件列表
 #[inline]
 pub async fn query(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
     time_level: PartitionTimeLevel,
-    time_min: i64,
+    time_min: i64,   // 查看该时间范围内所有文件
     time_max: i64,
 ) -> Result<Vec<FileKey>, anyhow::Error> {
+
+    // 一个DB查询
     let files = file_list::query(
         org_id,
         stream_type,
@@ -45,7 +48,7 @@ pub async fn query(
         file_keys.push(FileKey {
             key: file.0,
             meta: file.1,
-            deleted: false,
+            deleted: false,  // 代表此时这些文件还没有被标记成删除
         });
     }
     Ok(file_keys)

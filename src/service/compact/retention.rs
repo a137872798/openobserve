@@ -34,21 +34,27 @@ use crate::common::{
 };
 use crate::service::{db, file_list};
 
+// 记录需要删除的文件
 pub async fn delete_by_stream(
-    lifecycle_end: &str,
+    lifecycle_end: &str,  // 表示截止到该时间为止
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
 ) -> Result<(), anyhow::Error> {
-    // get schema
+    // get schema   从缓存中加载该stream的统计数据
     let stats = cache::stats::get_stream_stats(org_id, stream_name, stream_type);
+
+    // 有了统计数据就可以很快的做一些判断工作
     let created_at = stats.doc_time_min;
+    // 代表该stream还没有任何数据
     if created_at == 0 {
         return Ok(()); // no data, just skip
     }
     let created_at: DateTime<Utc> = Utc.timestamp_nanos(created_at * 1000);
     let lifecycle_start = created_at.format("%Y-%m-%d").to_string();
     let lifecycle_start = lifecycle_start.as_str();
+
+    // 最早的数据还未过期  不需要处理
     if lifecycle_start.ge(lifecycle_end) {
         return Ok(()); // created_at is after lifecycle_end, just skip
     }
@@ -63,14 +69,21 @@ pub async fn delete_by_stream(
     .await
 }
 
+// 删除某个stream的所有数据文件
 pub async fn delete_all(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
 ) -> Result<(), anyhow::Error> {
     let lock_key = format!("compact/retention/{org_id}/{stream_type}/{stream_name}");
+
+    // 获取分布式锁
     let locker = dist_lock::lock(&lock_key, CONFIG.etcd.command_timeout).await?;
+
+    // 检查此时该删除任务是否已经被分配给某个节点了
+    // 既然每个节点都可能处理某个stream的删除任务 也就是说每个节点都可以拿到一样的file_list 也就是说 某个stream下有哪些文件 实际上是集群同步的 那么文件数据有没有同步呢?
     let node = db::compact::retention::get_stream(org_id, stream_name, stream_type, None).await;
+    // 删除已经分配给别的节点 停止处理
     if !node.is_empty() && LOCAL_NODE_UUID.ne(&node) && get_node_by_uuid(&node).is_some() {
         log::error!("[COMPACT] stream {org_id}/{stream_type}/{stream_name} is deleting by {node}");
         dist_lock::unlock(&locker).await?;
@@ -78,6 +91,7 @@ pub async fn delete_all(
     }
 
     // before start merging, set current node to lock the stream
+    // 将本节点设置成 删除节点
     db::compact::retention::process_stream(
         org_id,
         stream_name,
@@ -90,7 +104,9 @@ pub async fn delete_all(
     dist_lock::unlock(&locker).await?;
     drop(locker);
 
+    // 查看数据是存储在本地还是远端
     if is_local_disk_storage() {
+        // 找到数据目录  数据都存储在该目录下
         let data_dir = format!(
             "{}files/{org_id}/{stream_type}/{stream_name}",
             CONFIG.common.data_stream_dir
@@ -103,15 +119,20 @@ pub async fn delete_all(
     } else {
         // delete files from s3
         // first fetch file list from local cache
+        // 在wal中 没有看到数据存储在远端的逻辑  应该是有一个同步操作
+        // 看来远程不支持删除所有文件 需要先查看本地文件列表
         let files = file_list::query(
             org_id,
             stream_name,
             stream_type,
             PartitionTimeLevel::Unset,
+            // 支持使用时间范围做条件
             0,
             0,
         )
         .await?;
+
+        // 调用远端存储的api 进行删除
         match storage::del(&files.iter().map(|v| v.key.as_str()).collect::<Vec<_>>()).await {
             Ok(_) => {}
             Err(e) => {
@@ -120,6 +141,7 @@ pub async fn delete_all(
         }
 
         // at the end, fetch a file list from s3 to guatantte there is no file
+        // 这里循环删除 主要是为了确保删除干净 可能是远端存储的问题?
         let prefix = format!("files/{org_id}/{stream_type}/{stream_name}/");
         loop {
             let files = storage::list(&prefix).await?;
@@ -136,6 +158,7 @@ pub async fn delete_all(
         }
     }
 
+    // 此时删除工作已经完成 可以清理file_list了
     // delete from file list
     delete_from_file_list(org_id, stream_name, stream_type, (0, 0)).await?;
     log::info!(
@@ -145,7 +168,7 @@ pub async fn delete_all(
         stream_name
     );
 
-    // mark delete done
+    // mark delete done  表示删除任务已经完成
     db::compact::retention::delete_stream_done(org_id, stream_name, stream_type, None).await?;
     log::info!(
         "deleted stream all: {}/{}/{}",
@@ -157,6 +180,7 @@ pub async fn delete_all(
     Ok(())
 }
 
+// 基于时间范围删除数据   下面的处理逻辑是一样的
 pub async fn delete_by_date(
     org_id: &str,
     stream_name: &str,
@@ -267,6 +291,7 @@ pub async fn delete_by_date(
         .await
 }
 
+// 删除file_list的数据
 async fn delete_from_file_list(
     org_id: &str,
     stream_name: &str,
@@ -282,6 +307,7 @@ async fn delete_from_file_list(
         time_range.1,
     )
     .await?;
+    // 已经被删除了 就不需要处理了
     if files.is_empty() {
         return Ok(());
     }
@@ -289,12 +315,19 @@ async fn delete_from_file_list(
     // collect stream stats
     let mut stream_stats = StreamStats::default();
 
+    // 存储天的容器
     let mut file_list_days: HashSet<String> = HashSet::new();
+
+    // key 是年月日小时
     let mut hours_files: HashMap<String, Vec<FileKey>> = HashMap::with_capacity(24);
+
+    // 遍历时间范围内的所有文件
     for file in files {
+        // 更新流统计数据
         stream_stats = stream_stats - file.meta;
         let file_name = file.key.clone();
         let columns: Vec<_> = file_name.split('/').collect();
+        // 获取年月日
         let day_key = format!("{}-{}-{}", columns[4], columns[5], columns[6]);
         file_list_days.insert(day_key);
         let hour_key = format!(
@@ -310,9 +343,10 @@ async fn delete_from_file_list(
     }
 
     // write file list to storage
+    // 将最新的file_list信息写入到 db/storage
     write_file_list(file_list_days, hours_files).await?;
 
-    // update stream stats
+    // update stream stats  TODO 更新统计数据
     if CONFIG.common.meta_store_external && stream_stats.doc_num != 0 {
         infra_file_list::set_stream_stats(
             org_id,
@@ -327,26 +361,33 @@ async fn delete_from_file_list(
     Ok(())
 }
 
+// 更新file_list
 async fn write_file_list(
-    file_list_days: HashSet<String>,
-    hours_files: HashMap<String, Vec<FileKey>>,
+    file_list_days: HashSet<String>,  // 以年月日为单位的key
+    hours_files: HashMap<String, Vec<FileKey>>,   // key 以年月日小时为单位 value 文件名
 ) -> Result<(), anyhow::Error> {
     if CONFIG.common.meta_store_external {
         write_file_list_db_only(hours_files).await
     } else {
+        // 还要更新远端存储上的 file_list
         write_file_list_s3(file_list_days, hours_files).await
     }
 }
 
+// 只需要更新本地即可
 async fn write_file_list_db_only(
     hours_files: HashMap<String, Vec<FileKey>>,
 ) -> Result<(), anyhow::Error> {
     for (_key, events) in hours_files {
+
+        // deleted == false 代表要保留/新增的项
         let put_items = events
             .iter()
             .filter(|v| !v.deleted)
             .map(|v| v.to_owned())
             .collect::<Vec<_>>();
+
+        // 找到被标记成删除的项
         let del_items = events
             .iter()
             .filter(|v| v.deleted)
@@ -356,6 +397,8 @@ async fn write_file_list_db_only(
         // retry 5 times
         let mut success = false;
         for _ in 0..5 {
+
+            // 更新file_list 的数据
             if let Err(e) = infra_file_list::batch_add(&put_items).await {
                 log::error!(
                     "[COMPACT] batch_write to external db failed, retrying: {}",
@@ -364,6 +407,8 @@ async fn write_file_list_db_only(
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
+
+            // 删除file_list数据
             if let Err(e) = infra_file_list::batch_remove(&del_items).await {
                 log::error!(
                     "[COMPACT] batch_delete to external db failed, retrying: {}",
@@ -384,29 +429,38 @@ async fn write_file_list_db_only(
     Ok(())
 }
 
+// 更新远端存储上的file_list
 async fn write_file_list_s3(
     file_list_days: HashSet<String>,
     hours_files: HashMap<String, Vec<FileKey>>,
 ) -> Result<(), anyhow::Error> {
+
+    // 遍历所有小时为单位的文件
     for (key, events) in hours_files {
         // upload the new file_list to storage
+        // 在DB中 和在远端存储上 应该都有 file_list 并且存在方式不同 在远端存储就是以.zst的形式
         let new_file_list_key = format!("file_list/{key}/{}.json.zst", ider::generate());
         let mut buf = zstd::Encoder::new(Vec::new(), 3)?;
+
+        // 遍历所有文件
         for file in events.iter() {
+            // 将FileKey转换成json字符串
             let mut write_buf = json::to_vec(&file)?;
             write_buf.push(b'\n');
             buf.write_all(&write_buf)?;
         }
         let compressed_bytes = buf.finish().unwrap();
+        // 不同id 可能id有时间信息吧  这样如果某些file被标记成删除 也会写入到zst文件中
         storage::put(&new_file_list_key, compressed_bytes.into()).await?;
 
         // set to local cache & send broadcast
-        // retry 5 times
+        // retry 5 times   需要将file_list 同步到其他节点
         for _ in 0..5 {
             // set to local cache
             let mut cache_success = true;
             for event in &events {
                 if let Err(e) =
+                // 更新本地file_list缓存 以及更新数据到db
                     db::file_list::progress(&event.key, event.meta, event.deleted, false).await
                 {
                     cache_success = false;
@@ -421,7 +475,7 @@ async fn write_file_list_s3(
             if !cache_success {
                 continue;
             }
-            // send broadcast to other nodes
+            // send broadcast to other nodes  现在要将file_list的更新情况同步到其他节点
             if let Err(e) = db::file_list::broadcast::send(&events, None).await {
                 log::error!(
                     "[COMPACT] delete_from_file_list send broadcast failed, retrying: {}",
@@ -434,7 +488,7 @@ async fn write_file_list_s3(
         }
     }
 
-    // mark file list need to do merge again
+    // mark file list need to do merge again   标记该stream这些天的数据已经删除了
     for key in file_list_days {
         db::compact::file_list::set_delete(&key).await?;
     }

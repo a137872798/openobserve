@@ -28,7 +28,7 @@ use crate::common::meta::{
 };
 use crate::common::utils::{flatten, json, time::parse_timestamp_micro_from_value};
 use crate::service::{
-    db, format_stream_name, ingestion::write_file, logs::StreamMeta, schema::stream_schema_exists,
+    db, format_stream_name, ingestion::, logs::StreamMeta, schema::stream_schema_exists,
     usage::report_request_usage_stats,
 };
 

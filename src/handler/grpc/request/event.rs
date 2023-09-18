@@ -29,9 +29,7 @@ pub struct Eventer;
 #[tonic::async_trait]
 impl Event for Eventer {
 
-    /**
-    * 接收其他节点发送的告知文件列表的请求
-    */
+    // 集群中每个节点在更新file_list后会同步到其他节点
     async fn send_file_list(
         &self,
         req: Request<FileList>,
@@ -49,12 +47,12 @@ impl Event for Eventer {
         // 遍历每个文件信息
         for file in req.items.iter() {
             // log::info!("received event:file {:?}", file);
-            // 感觉是要进行文件的同步
+            // 将文件信息写入本地缓存和 DB
             if let Err(e) = file_list::progress(
                 &file.key,
                 FileMeta::from(file.meta.as_ref().unwrap()),
-                file.deleted,
-                true,
+                file.deleted,  // 描述该文件是被删除了还是新增
+                true,  // 代表需要将file_list中的某个文件描述信息读取到内存
             )
             .await
             {

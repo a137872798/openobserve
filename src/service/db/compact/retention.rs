@@ -39,6 +39,7 @@ fn mk_key(
 // delete data from stream
 // if date_range is empty, delete all data
 // date_range is a tuple of (start, end), eg: (2023-01-02, 2023-01-03)
+// 将需要删除的数据文件范围记录到 元数据中
 pub async fn delete_stream(
     org_id: &str,
     stream_name: &str,
@@ -46,9 +47,11 @@ pub async fn delete_stream(
     date_range: Option<(&str, &str)>,
 ) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
+
+    // 将时间范围变成一个key
     let key = mk_key(org_id, stream_type, stream_name, date_range);
 
-    // write in cache
+    // write in cache  如果缓存中已经有 代表已经入库了 不需要重复处理
     if CACHE.contains(&key) {
         return Ok(()); // already in cache, just skip
     }
@@ -56,10 +59,12 @@ pub async fn delete_stream(
     let db_key = format!("/compact/delete/{key}");
     CACHE.insert(key);
 
+    // 为了避免数据丢失 写入db
     Ok(db.put(&db_key, "OK".into(), infra_db::NEED_WATCH).await?)
 }
 
 // set the stream is processing by the node
+// 设置处理删除任务的节点
 pub async fn process_stream(
     org_id: &str,
     stream_name: &str,
@@ -75,7 +80,7 @@ pub async fn process_stream(
         .await?)
 }
 
-// get the stream processing information
+// get the stream processing information   查看删除任务被分配给哪个节点
 pub async fn get_stream(
     org_id: &str,
     stream_name: &str,
@@ -101,6 +106,8 @@ pub fn is_deleting_stream(
     CACHE.contains(&mk_key(org_id, stream_type, stream_name, date_range))
 }
 
+
+// 移除执行删除任务的节点  表示删除任务已经完成
 pub async fn delete_stream_done(
     org_id: &str,
     stream_name: &str,
@@ -123,12 +130,14 @@ pub async fn delete_stream_done(
     Ok(())
 }
 
+// 列举所有需要删除的数据范围
 pub async fn list() -> Result<Vec<String>, anyhow::Error> {
     let mut items = Vec::new();
     let db = &infra_db::DEFAULT;
     let key = "/compact/delete/";
     let ret = db.list(key).await?;
     for (item_key, _) in ret {
+        // 去掉前缀后 得到的格式是  org_id, stream_type, stream_name, date_range
         let item_key = item_key.strip_prefix(key).unwrap();
         items.push(item_key.to_string());
     }

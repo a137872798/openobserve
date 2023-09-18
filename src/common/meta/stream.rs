@@ -25,6 +25,7 @@ use crate::common::{
     utils::json,
 };
 
+// 本身没有直接关联文件
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Stream {
     pub name: String,
@@ -38,6 +39,7 @@ pub struct Stream {
     pub metrics_meta: Option<super::prom::Metadata>,
 }
 
+// 实际上对应schema的field
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct StreamProperty {
     pub name: String,
@@ -51,6 +53,7 @@ pub struct StreamQueryParams {
     pub stream_type: Option<StreamType>,
 }
 
+// 一些统计数据 以便加速某些查询
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct StreamStats {
     pub created_at: i64,
@@ -185,6 +188,7 @@ pub struct StreamSchema {
     pub schema: Schema,
 }
 
+//
 #[derive(Clone, Debug, Deserialize, ToSchema, Default)]
 pub struct StreamSettings {
     #[serde(skip_serializing_if = "Vec::is_empty")]

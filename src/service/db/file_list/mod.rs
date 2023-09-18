@@ -33,13 +33,13 @@ pub static BLOCKED_ORGS: Lazy<Vec<&str>> =
     Lazy::new(|| CONFIG.compact.blocked_orgs.split(',').collect());
 
 /**
-* 更新本地 fileList缓存 并不是文件数据 只是记录集群中有哪些文件
+更新本地file_list缓存
 */
 pub async fn progress(
     key: &str,
     data: FileMeta,
-    delete: bool,
-    download: bool,
+    delete: bool,    // 该文件是被删除了 还是新增的
+    download: bool,  // 代表是否要下载文件数据
 ) -> Result<(), anyhow::Error> {
 
     // 代表删除文件
@@ -52,6 +52,7 @@ pub async fn progress(
             );
         }
     } else {
+        // 将数据加入到db中
         if let Err(e) = file_list::add(key, &data).await {
             log::error!(
                 "service:db:file_list: add {}, set_file_to_cache error: {}",
@@ -60,7 +61,7 @@ pub async fn progress(
             );
         }
 
-        // 代表需要将文件数据下载到本地
+        // 只是文件元数据
         if download
             && CONFIG.memory_cache.cache_latest_files
             && cluster::is_querier(&cluster::LOCAL_NODE_ROLE)

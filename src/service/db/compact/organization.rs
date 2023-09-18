@@ -22,6 +22,7 @@ fn mk_key(org_id: &str) -> String {
     format!("/compact/organization/{org_id}")
 }
 
+// 获取某个组织的偏移量信息  这个值跟 数据合并有关
 pub async fn get_offset(org_id: &str) -> (i64, String) {
     let db = &infra_db::DEFAULT;
     let key = mk_key(org_id);
@@ -29,8 +30,11 @@ pub async fn get_offset(org_id: &str) -> (i64, String) {
         Ok(ret) => String::from_utf8_lossy(&ret).to_string(),
         Err(_) => String::from("0"),
     };
+
+    // 将查询出来的值拆分
     if value.contains(';') {
         let mut parts = value.split(';');
+        // 一个是偏移量信息 一个应该是之前进行合并的数据节点
         let offset: i64 = parts.next().unwrap().parse().unwrap();
         let node = parts.next().unwrap().to_string();
         (offset, node)
@@ -39,6 +43,7 @@ pub async fn get_offset(org_id: &str) -> (i64, String) {
     }
 }
 
+// 设置执行merge的节点 以及偏移量  一般来说偏移量从0开始
 pub async fn set_offset(
     org_id: &str,
     offset: i64,

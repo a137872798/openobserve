@@ -27,6 +27,7 @@ pub fn get_stats() -> RwHashMap<String, StreamStats> {
     STATS.clone()
 }
 
+// 从缓存中加载统计数据
 #[inline]
 pub fn get_stream_stats(org_id: &str, stream_name: &str, stream_type: StreamType) -> StreamStats {
     let key = format!("{org_id}/{stream_type}/{stream_name}");
