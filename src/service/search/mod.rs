@@ -153,7 +153,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     nodes.sort_by_key(|x| x.id);
     let nodes = nodes;
 
-    // 可以查询的节点数量
+    // 这里只要查询节点的数量
     let querier_num = match nodes
         .iter()
         .filter(|node| cluster::is_querier(&node.role))
@@ -199,7 +199,9 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     let mut tasks = Vec::new();
     let mut offset_start: usize = 0;
 
-    // 遍历每个节点
+    // 遍历每个节点   包含摄取节点和查询节点  查询节点只负责 file_list的文件 (负载平分) 这样就可以读取到全部的file_list数据
+    // 而摄取节点则是可能包含了该stream插入的部分数据  全部的摄取节点加起来才是此时stream落入wal的全部数据 再加上 file_list的全部数据 才是完整的stream数据
+    // 不过wal数据什么时候到file_list呢
     for (partition_no, node) in nodes.iter().cloned().enumerate() {
         let mut req = req.clone();
         let mut job = job.clone();
@@ -213,7 +215,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         // 能参与查询的节点 可以是查询节点或者摄取节点
         let is_querier = cluster::is_querier(&node.role);
 
-        // 不是查询节点好像有点奇怪?
+        // 查询节点需要借助file_list从 objectStore查询  摄取节点则是从本地wal日志文件中读取
         if is_querier {
 
             // 外层遍历每个节点  内层每个节点直接推进offset

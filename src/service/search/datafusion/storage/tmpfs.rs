@@ -55,6 +55,8 @@ impl std::fmt::Display for Tmpfs {
     }
 }
 
+// 使用临时文件系统
+
 #[async_trait]
 impl ObjectStore for Tmpfs {
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -120,6 +122,8 @@ impl ObjectStore for Tmpfs {
         // log::info!("list: {:?}", prefix);
         let mut values = Vec::new();
         let key = prefix.unwrap().to_string();
+
+        // 这里是列举了所有文件
         let objects = tmpfs::list(&key).unwrap();
         for file in objects {
             values.push(Ok(ObjectMeta {

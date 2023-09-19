@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::common::infra::config::RwHashMap;
 use crate::common::infra::errors::*;
 
+// 管理文件
 static FILES: Lazy<RwHashMap<String, File>> = Lazy::new(Default::default);
 static DATA: Lazy<RwHashMap<String, Bytes>> = Lazy::new(Default::default);
 
@@ -92,7 +93,7 @@ pub fn get(path: &str) -> Result<Bytes> {
     }
 }
 
-//
+// 同时存储文件内容和文件基本信息
 pub fn set(path: &str, data: Bytes) -> Result<()> {
     let path = format_key(path);
     let size = data.len();

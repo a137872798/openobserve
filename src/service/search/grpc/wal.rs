@@ -37,19 +37,23 @@ use crate::service::{
 };
 
 /// search in local WAL, which haven't been sync to object storage
+/// 从wal中查询数据
 #[tracing::instrument(name = "service:search:wal:enter", skip_all, fields(org_id = sql.org_id, stream_name = sql.stream_name))]
 pub async fn search(
     session_id: &str,
     sql: Arc<Sql>,
     stream_type: meta::StreamType,
 ) -> super::SearchResult {
-    // get file list
+    // get file list   根据stream_name/stream_type 和本次查询的时间范围 找到一组文件
     let mut files = get_file_list(&sql, stream_type).await?;
+
+    // 统计本次扫描的内存大小和一些其他数据
     let mut scan_stats = ScanStats::new();
 
     // cache files
     let work_dir = session_id.to_string();
     for file in files.clone().iter() {
+        // 将数据读取到内存中
         match get_file_contents(&file.key) {
             Err(_) => {
                 files.retain(|x| x != file);
@@ -58,13 +62,15 @@ pub async fn search(
                 scan_stats.original_size += file_data.len() as i64;
                 let file_key = file.key.strip_prefix(&CONFIG.common.data_wal_dir).unwrap();
                 let file_name = format!("/{work_dir}/{file_key}");
+                // 存储到临时文件系统中
                 tmpfs::set(&file_name, file_data.into()).expect("tmpfs set success");
             }
         }
     }
 
-    // check wal memory mode
+    // check wal memory mode   代表wal数据存储在内存中   上面检索的是文件 这里检索的是内存模拟的文件
     if CONFIG.common.wal_memory_mode_enabled {
+        // 找到满足条件的所有内存文件
         let mem_files = wal::get_search_in_memory_files(&sql.org_id, &sql.stream_name, stream_type)
             .unwrap_or_default();
         for (file_key, file_data) in mem_files {
@@ -75,7 +81,11 @@ pub async fn search(
         }
     }
 
+    // 此时已经分别用加载内存/加载文件的方式 读取到了所有相关的wal数据了
+
     scan_stats.files = files.len() as i64;
+
+    // 本节点没有数据需要查询
     if scan_stats.files == 0 {
         return Ok((HashMap::new(), scan_stats));
     }
@@ -85,7 +95,7 @@ pub async fn search(
         scan_stats.original_size
     );
 
-    // fetch all schema versions, get latest schema
+    // fetch all schema versions, get latest schema   获取最新的schema信息 schema应该也是要全集群同步的
     let schema_latest = match db::schema::get(&sql.org_id, &sql.stream_name, stream_type).await {
         Ok(schema) => schema,
         Err(err) => {
@@ -101,10 +111,13 @@ pub async fn search(
             .with_metadata(std::collections::HashMap::new()),
     );
 
-    // check schema version
+    // check schema version   列举所有文件信息
     let files = tmpfs::list(&work_dir).unwrap_or_default();
     let mut files_group: HashMap<String, Vec<FileKey>> = HashMap::with_capacity(2);
+
+    // 代表不支持schema发生变化
     if !CONFIG.common.widening_schema_evolution {
+        // 代表这些文件都以该schema来解释
         files_group.insert(
             "latest".to_string(),
             files
@@ -113,6 +126,7 @@ pub async fn search(
                 .collect(),
         );
     } else {
+        // 这里将schema与文件关联起来  对应的文件就用对应的schema版本来解释
         for file in files {
             let schema_version = get_schema_version(&file.location)?;
             let entry = files_group.entry(schema_version).or_insert_with(Vec::new);
@@ -122,19 +136,25 @@ pub async fn search(
 
     let mut tasks = Vec::new();
     let single_group = files_group.len() == 1;
+
+    // 遍历每个版本的schema 看看要怎么兼容最新的schema
     for (ver, files) in files_group {
         // get schema of the file
         let file_data = tmpfs::get(&files.first().unwrap().key).unwrap();
         let mut schema_reader = BufReader::new(file_data.as_ref());
+
+        // 通过读取的json数据来推断schema
         let mut inferred_schema = match infer_json_schema(&mut schema_reader, None) {
             Ok(schema) => schema,
             Err(err) => {
                 return Err(Error::from(err));
             }
         };
-        // calulate schema diff
+        // calulate schema diff   比较该schema与最新的schema的差别
         let mut diff_fields = HashMap::new();
         let group_fields = inferred_schema.fields();
+
+        // 找到类型不匹配的fields
         for field in group_fields {
             if let Ok(v) = schema_latest.field_with_name(field.name()) {
                 if v.data_type() != field.data_type() {
@@ -145,6 +165,7 @@ pub async fn search(
         // add not exists field for wal infered schema
         let mut new_fields = Vec::new();
         for field in schema_latest.fields() {
+            // 找到新增的field
             if inferred_schema.field_with_name(field.name()).is_err() {
                 new_fields.push(field.clone());
             }
@@ -223,12 +244,15 @@ pub async fn search(
 }
 
 /// get file list from local wal, no need match_source, each file will be searched
+/// 查询wal目录下的文件列表 而不是另一个含义上的file_list
 #[tracing::instrument(name = "service:search:grpc:wal:get_file_list", skip_all, fields(org_id = sql.org_id, stream_name = sql.stream_name))]
 async fn get_file_list(sql: &Sql, stream_type: meta::StreamType) -> Result<Vec<FileKey>, Error> {
     let pattern = format!(
         "{}files/{}/{stream_type}/{}/",
         &CONFIG.common.data_wal_dir, &sql.org_id, &sql.stream_name
     );
+
+    // 扫描目录下出现的所有文件
     let files = scan_files(&pattern);
 
     let mut result = Vec::with_capacity(files.len());
@@ -238,11 +262,16 @@ async fn get_file_list(sql: &Sql, stream_type: meta::StreamType) -> Result<Vec<F
             return Ok(result);
         }
     };
+
+    // 通过时间范围来排除掉部分文件
     let time_range = sql.meta.time_range.unwrap_or((0, 0));
+
+    // 遍历wal文件
     for file in files {
         if time_range != (0, 0) {
             // check wal file created time, we can skip files which created time > end_time
             let file_meta = get_file_meta(&file).map_err(Error::from)?;
+            // 拿到文件的元数据 获取创建时间和最后修改时间 (靠最后修改时间来判断不准吧)
             let file_modified = file_meta
                 .modified()
                 .unwrap_or(UNIX_EPOCH)
@@ -255,11 +284,13 @@ async fn get_file_list(sql: &Sql, stream_type: meta::StreamType) -> Result<Vec<F
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_micros();
+            // 减去浮动时间
             let file_created = (file_created as i64)
                 - chrono::Duration::hours(CONFIG.limit.ingest_allowed_upto)
                     .num_microseconds()
                     .unwrap_or_default();
 
+            // 跳过范围外的文件
             if (time_range.0 > 0 && (file_modified as i64) < time_range.0)
                 || (time_range.1 > 0 && file_created > time_range.1)
             {
@@ -272,6 +303,8 @@ async fn get_file_list(sql: &Sql, stream_type: meta::StreamType) -> Result<Vec<F
                 continue;
             }
         }
+
+        // 构建FileKey
         let file = Path::new(&file).canonicalize().unwrap();
         let file = file.strip_prefix(&wal_dir).unwrap();
         let local_file = file.to_str().unwrap();

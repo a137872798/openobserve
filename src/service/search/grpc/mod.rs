@@ -36,16 +36,21 @@ mod wal;
 
 pub type SearchResult = Result<(HashMap<String, Vec<RecordBatch>>, ScanStats), Error>;
 
+// 这个模块就是各节点提供的grpc请求
 #[tracing::instrument(name = "service:search:grpc:search", skip_all, fields(org_id = req.org_id))]
 pub async fn search(
-    req: &cluster_rpc::SearchRequest,
+    req: &cluster_rpc::SearchRequest,   // 查询请求中包含已经解析/校验和改写好的sql
 ) -> Result<cluster_rpc::SearchResponse, Error> {
     let start = std::time::Instant::now();
+
+    // 重走了一遍改写逻辑 不过很多部分已经被改写过了 所有跳过了很多处理分支
     let sql = Arc::new(super::sql::Sql::new(req).await?);
+    // 描述数据流的类型
     let stream_type = StreamType::from(req.stream_type.as_str());
+    // session_id 是随机生成的 作为本次集群范围内查询的id
     let session_id = Arc::new(req.job.as_ref().unwrap().session_id.to_string());
 
-    // check if we are allowed to search
+    // check if we are allowed to search   该stream已经被标记成删除了
     if db::compact::retention::is_deleting_stream(&sql.org_id, &sql.stream_name, stream_type, None)
     {
         return Err(Error::ErrorCode(ErrorCodes::SearchStreamNotFound(format!(
@@ -60,7 +65,10 @@ pub async fn search(
     // search in WAL
     let session_id1 = session_id.clone();
     let sql1 = sql.clone();
+    // TODO 链路追踪的先忽略
     let wal_span = info_span!("service:search:grpc:in_wal", org_id = sql.org_id,stream_name = sql.stream_name, stream_type = ?stream_type);
+    // 本节点如果是 摄取节点 也就是允许数据写入 那么数据很可能以wal文件的形式保存在本地
+    // 第一层先找到所有摄取节点 并读取wal日志
     let task1 = tokio::task::spawn(
         async move {
             if cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {

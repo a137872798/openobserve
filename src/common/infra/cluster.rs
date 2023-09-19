@@ -332,7 +332,7 @@ pub fn get_cached_online_querier_nodes() -> Option<Vec<Node>> {
 #[inline(always)]
 pub fn get_cached_online_query_nodes() -> Option<Vec<Node>> {
     get_cached_nodes(|node| {
-        // 摄取节点 相当于 read + write   查询节点只是 read
+        // 摄取节点相当于是还落在本地的wal数据文件   查询节点则是读取已经存储在object_store的file_list文件
         node.status == NodeStatus::Online && (is_querier(&node.role) || is_ingester(&node.role))
     })
 }

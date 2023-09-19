@@ -24,9 +24,11 @@ use tokio::io::AsyncWrite;
 use crate::common::infra::{cache::file_data, storage};
 use crate::common::utils::time::BASE_TIME;
 
-/// fsn: File system without memory cache
+/// fsn: File system without memory cache   直接使用文件系统 而不使用内存作为缓存
 #[derive(Debug, Default)]
 pub struct FS {}
+
+// 从代码来观察 跟 memory.rs的一样 可能是config设置了不能用内存吧
 
 impl FS {
     /// Create new no-cache storage.

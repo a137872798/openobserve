@@ -94,17 +94,21 @@ pub fn check_in_use(
     MANAGER.check_in_use(org_id, stream_name, stream_type, file_name)
 }
 
+// 检索内存模拟的wal文件
 pub fn get_search_in_memory_files(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
 ) -> Result<Vec<(String, Vec<u8>)>, std::io::Error> {
+
+    // 非内存模式 返回
     if !CONFIG.common.wal_memory_mode_enabled {
         return Ok(vec![]);
     }
 
     let prefix = format!("files/{org_id}/{stream_type}/{stream_name}/");
 
+    // 既然使用了内存模式 那么 RwFile自然就是一块内存
     Ok(chain(
         // read usesing files in use
         MANAGER.data.iter().flat_map(|data| {
@@ -129,6 +133,7 @@ pub fn get_search_in_memory_files(
                                                      // even better but can't, due to `data`
                                                      // getting borrowed beyond its lifetime
         }),
+        // 这个是模拟已经刷盘的文件
         MEMORY_FILES.list().iter().filter_map(|(file, data)| {
             if file.starts_with(&prefix) {
                 Some((file.clone(), data.to_vec()))
