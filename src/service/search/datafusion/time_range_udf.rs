@@ -32,11 +32,11 @@ use crate::common::utils::{str, time};
 /// The name of the time_range UDF given to DataFusion.
 pub const TIME_RANGE_UDF_NAME: &str = "time_range";
 
-/// Implementation of time_range
+/// Implementation of time_range    时间范围函数
 pub(crate) static TIME_RANGE_UDF: Lazy<ScalarUDF> = Lazy::new(|| {
     create_udf(
         TIME_RANGE_UDF_NAME,
-        // expects three string
+        // expects three string        判断某个字段是否在给定的时间范围内
         vec![DataType::Int64, DataType::Utf8, DataType::Utf8],
         // returns boolean
         Arc::new(DataType::Boolean),
@@ -55,6 +55,7 @@ pub fn time_range_expr_impl() -> ScalarFunctionImplementation {
         }
 
         // 1. cast both arguments to Union. These casts MUST be aligned with the signature or this function panics!
+        // 解析3个参数
         let base = &args[0]
             .as_any()
             .downcast_ref::<Int64Array>()

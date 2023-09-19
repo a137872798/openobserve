@@ -29,21 +29,24 @@ use vrl::compiler::{runtime::Runtime, CompilationResult, Program, TargetValueRef
 use crate::common::{infra::config::QUERY_FUNCTIONS, utils::json};
 use crate::service::{ingestion::compile_vrl_function, logs::get_value};
 
+// 创建用户定义函数
 fn create_user_df(
     fn_name: &str,
     num_args: u8,
-    pow_scalar: ScalarFunctionImplementation,
+    pow_scalar: ScalarFunctionImplementation,  // 表示一个函数体
     mut output_cols: Vec<String>,
 ) -> ScalarUDF {
     let mut input_vec = vec![];
     for _i in 0..num_args {
         input_vec.push(DataType::Utf8);
     }
+
+    // 产生用户函数
     if output_cols.is_empty() {
         create_udf(
             fn_name,
             input_vec,
-            Arc::new(DataType::Utf8),
+            Arc::new(DataType::Utf8),   // 默认输出类型
             Volatility::Immutable,
             pow_scalar,
         )
@@ -63,13 +66,16 @@ fn create_user_df(
     }
 }
 
+// 获取所有转换函数
 pub async fn get_all_transform(org_id: &str) -> Vec<datafusion::logical_expr::ScalarUDF> {
     let mut udf;
     let mut udf_list = Vec::new();
     for transform in QUERY_FUNCTIONS.clone().iter() {
         let key = transform.key();
-        //do not register ingest_time transforms
+        //do not register ingest_time transforms      返回该组织相关的转换函数
         if key.contains(org_id) {
+
+            // 传入相关信息 产生函数对象
             udf = get_udf_vrl(
                 transform.name.to_owned(),
                 transform.function.to_owned().as_str(),
@@ -84,6 +90,7 @@ pub async fn get_all_transform(org_id: &str) -> Vec<datafusion::logical_expr::Sc
     udf_list
 }
 
+// 根据相关信息 产生一个转换函数
 fn get_udf_vrl(
     fn_name: String,
     func: &str,
@@ -96,21 +103,29 @@ fn get_udf_vrl(
     let local_fn_params = params.to_owned();
     let local_org_id = org_id.to_owned();
 
-    //pre computation stage
+    //pre computation stage    产生参数列表
     let in_params = local_fn_params.split(',').collect::<Vec<&str>>();
+
     let mut in_obj_str = String::from("");
     for param in in_params {
+        // 把参数变成   {} = {} 的形式
         in_obj_str.push_str(&format!(" {} = \"{}\" \n", param, ""));
     }
     in_obj_str.push_str(&format!(" \n {}", &local_func));
+
+    // 得到了一组参与函数的列
     let res_cols = match compile_vrl_function(&in_obj_str, &local_org_id) {
         Ok(res) => res.fields,
         Err(_) => vec![],
     };
     // end pre computation stage
 
+    // 这个是函数对象
     let pow_calc = move |args: &[ArrayRef]| {
+
+        // 代表本次函数计算 涉及到多少行
         let len = args[0].len();
+        // 拆解参数
         let in_params = local_fn_params.split(',').collect::<Vec<&str>>();
         let mut is_multi_value = false;
         let mut res_data_vec = vec![];
@@ -120,6 +135,8 @@ fn get_udf_vrl(
         for i in 0..len {
             let mut obj_str = String::from("");
             for (j, arg) in args.iter().enumerate() {
+
+                // 将该列的值转换成 str
                 let col = arg
                     .as_any()
                     .downcast_ref::<StringArray>()

@@ -20,9 +20,12 @@ use crate::common::{
     utils::json,
 };
 
+// 获取目的地模板 模板代表的是通知信息
 pub async fn get(org_id: &str, name: &str) -> Result<Option<DestinationTemplate>, anyhow::Error> {
     let map_key = format!("{org_id}/{name}");
     let default_org_key = format!("{DEFAULT_ORG}/{name}");
+
+    // 从缓存获取
     let value: Option<DestinationTemplate> = if ALERTS_TEMPLATES.contains_key(&map_key)
         || ALERTS_TEMPLATES.contains_key(&default_org_key)
     {

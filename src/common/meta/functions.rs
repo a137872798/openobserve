@@ -21,6 +21,7 @@ use vrl::{
 
 use super::StreamType;
 
+// 描述一个转换函数  作为datafusion的udf
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Transform {

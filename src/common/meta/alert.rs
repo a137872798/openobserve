@@ -20,15 +20,16 @@ use utoipa::ToSchema;
 use super::{search::Query, StreamType};
 use crate::common::utils::json::{Map, Value};
 
+// 代表一个告警实体
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Alert {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub stream: String,
-    #[schema(value_type = Option<SearchQuery>)]
+    #[schema(value_type = Option<SearchQuery>)]  // 查询语句应该是能定位到产生告警的日志
     pub query: Option<Query>,
-    pub condition: Condition,
+    pub condition: Condition,  // 描述产生告警的条件
     pub duration: i64,
     pub frequency: i64,
     pub time_between_alerts: i64,
@@ -42,6 +43,7 @@ pub struct Alert {
     pub stream_type: Option<StreamType>,
 }
 
+// 告警要通告的目的地  比如微信/飞书/钉钉
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AlertDestination {
     pub name: Option<String>,
@@ -51,10 +53,12 @@ pub struct AlertDestination {
     pub skip_tls_verify: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
-    pub template: String,
+    pub template: String,  // 模板
 }
 
 impl AlertDestination {
+
+    // 将目的地模板 转换成一个目的地resp  模板就是描述通知内容
     pub fn to_dest_resp(&self, template: Option<DestinationTemplate>) -> AlertDestinationResponse {
         AlertDestinationResponse {
             url: self.url.clone(),
@@ -76,7 +80,7 @@ pub struct AlertDestinationResponse {
     pub skip_tls_verify: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
-    pub template: Option<DestinationTemplate>,
+    pub template: Option<DestinationTemplate>, // 包含模板信息
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -100,6 +104,7 @@ impl fmt::Display for AlertHTTPType {
     }
 }
 
+// 目的地模板
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DestinationTemplate {
     pub name: Option<String>,
@@ -134,18 +139,21 @@ impl PartialEq for Alert {
     }
 }
 
+// 对应告警的列表查询结果
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AlertList {
     pub list: Vec<Alert>,
 }
 
-// 触发器
+// 一个待触发的对象  对应一个非实时的告警
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trigger {
+    // 告警产生的时间戳
     #[serde(default)]
     pub timestamp: i64,
     #[serde(default)]
     pub is_valid: bool,
+    // 关联的告警名称
     #[serde(default)]
     pub alert_name: String,
     #[serde(default)]
@@ -186,6 +194,7 @@ pub struct TriggerTimer {
     pub expires_at: i64,
 }
 
+// 描述该告警是通过检测哪一些产生的
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {

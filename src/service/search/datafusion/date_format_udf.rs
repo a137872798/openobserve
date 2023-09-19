@@ -35,18 +35,20 @@ pub const DATE_FORMAT_UDF_NAME: &str = "date_format";
 
 /// Implementation of date_format
 pub(crate) static DATE_FORMAT_UDF: Lazy<ScalarUDF> = Lazy::new(|| {
+
+    // 创建一个用户定义的函数
     create_udf(
         DATE_FORMAT_UDF_NAME,
         // expects three string
-        vec![DataType::Int64, DataType::Utf8, DataType::Utf8],
+        vec![DataType::Int64, DataType::Utf8, DataType::Utf8],  // 允许接入数字 字符类型
         // returns string
-        Arc::new(DataType::Utf8),
+        Arc::new(DataType::Utf8),  // 输出字符类型
         Volatility::Immutable,
         date_format_expr_impl(),
     )
 });
 
-/// date_format function for datafusion
+/// date_format function for datafusion  触发的函数
 pub fn date_format_expr_impl() -> ScalarFunctionImplementation {
     let func = move |args: &[ArrayRef]| -> datafusion::error::Result<ArrayRef> {
         if args.len() != 3 {
@@ -54,6 +56,8 @@ pub fn date_format_expr_impl() -> ScalarFunctionImplementation {
                 "UDF params should be: date_format(field, format, zone)".to_string(),
             )));
         }
+
+        // 要求3个参数 分别是字段 格式 时区
 
         // 1. cast both arguments to Union. These casts MUST be aligned with the signature or this function panics!
         let timestamp = &args[0]
@@ -76,9 +80,11 @@ pub fn date_format_expr_impl() -> ScalarFunctionImplementation {
                     // in arrow, any value can be null.
                     // Here we decide to make our UDF to return null when either argument is null.
                     (Some(timestamp), (Some(format), Some(timezone))) => {
+                        // 解析时间戳
                         let timestamp = time::parse_i64_to_timestamp_micros(timestamp);
                         let t = Utc.timestamp_nanos(timestamp * 1000);
                         let offset = time::parse_timezone_to_offset(timezone) as i32;
+                        // 按照格式解析
                         let result = if offset == 0 {
                             t.format(format).to_string()
                         } else {

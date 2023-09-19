@@ -45,6 +45,7 @@ pub const REGEX_MATCH_UDF_NAME: &str = "re_match";
 /// The name of the not_regex_match UDF given to DataFusion.
 pub const REGEX_NOT_MATCH_UDF_NAME: &str = "re_not_match";
 
+// 这个应该是表示所有的 zo函数
 pub const DEFAULT_FUNCTIONS: [ZoFunction; 6] = [
     ZoFunction {
         name: "match_all",
@@ -62,6 +63,8 @@ pub const DEFAULT_FUNCTIONS: [ZoFunction; 6] = [
         name: MATCH_UDF_IGNORE_CASE_NAME,
         text: "match_all_ignore_case('v')",
     },
+
+    // 正则匹配
     ZoFunction {
         name: REGEX_MATCH_UDF_NAME,
         text: "re_match(field, 'pattern')",

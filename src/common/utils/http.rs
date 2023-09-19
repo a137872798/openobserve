@@ -20,7 +20,7 @@ use crate::common::meta::StreamType;
 
 #[inline(always)]
 pub(crate) fn get_stream_type_from_request(
-    query: &Query<HashMap<String, String>>,
+    query: &Query<HashMap<String, String>>,  // 根据请求参数 获取streamType
 ) -> Result<Option<StreamType>, Error> {
     let stream_type = match query.get("type") {
         Some(s) => match s.to_lowercase().as_str() {

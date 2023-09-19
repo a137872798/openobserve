@@ -80,24 +80,30 @@ pub async fn search(
         .instrument(wal_span),
     );
 
-    // search in object storage
+    // search in object storage    第二层 作为querier节点 去ObjectStore查询数据
     let req_stype = req.stype;
     let session_id2 = session_id.clone();
     let sql2 = sql.clone();
+
+    // req携带的file_list 就是要检索的文件列表
     let file_list: Vec<FileKey> = req.file_list.iter().map(FileKey::from).collect();
     let storage_span = info_span!("service:search:grpc:in_storage", org_id = sql.org_id,stream_name = sql.stream_name, stream_type = ?stream_type);
+
     let task2 = tokio::task::spawn(
         async move {
+            // 如果本节点是摄取节点  就不需要查询storage数据了
             if req_stype == cluster_rpc::SearchType::WalOnly as i32 {
                 Ok((HashMap::new(), ScanStats::default()))
             } else {
+                // 集群模式查询就会进入这里
                 storage::search(&session_id2, sql2, &file_list, stream_type).await
             }
         }
         .instrument(storage_span),
     );
 
-    // merge data from local WAL
+    // 此时已经同时从wal 和storage中读取完数据了 准备进行合并
+    // merge data from local WAL       result 就是 (result,stats)
     let (batches1, scan_stats1) = match task1.await {
         Ok(result) => result?,
         Err(err) => {
@@ -137,9 +143,13 @@ pub async fn search(
     }
     scan_stats.add(&scan_stats2);
 
-    // merge all batches
+    // merge all batches    此时已经合并了结果集
     let (offset, limit) = (0, sql.meta.offset + sql.meta.limit);
+
+    // 遍历每个key关联的数据集   key 可以对应一个sql
     for (name, batches) in results.iter_mut() {
+
+        // 找到原始sql
         let merge_sql = if name == "query" {
             sql.origin_sql.clone()
         } else {
@@ -149,6 +159,8 @@ pub async fn search(
                 .0
                 .clone()
         };
+
+        // 比如一些聚合结果是不能通过简单的存放在一起来表示合并完成的  这里调用merge进行真正的合并
         *batches =
             match super::datafusion::exec::merge(&sql.org_id, offset, limit, &merge_sql, batches)
                 .await
@@ -166,7 +178,11 @@ pub async fn search(
 
     // final result
     let mut hits_buf = Vec::new();
+
+    // 这是中间结果集
     let result_query = results.get("query").cloned().unwrap_or_default();
+
+    // 合并后 只要[0] 就可以了
     if !result_query.is_empty() && !result_query[0].is_empty() {
         let schema = result_query[0][0].schema();
         let ipc_options = ipc::writer::IpcWriteOptions::default();
@@ -175,6 +191,8 @@ pub async fn search(
             .unwrap();
         let mut writer =
             ipc::writer::FileWriter::try_new_with_options(hits_buf, &schema, ipc_options).unwrap();
+
+        // 将数据写入
         for batch in result_query {
             for item in batch {
                 writer.write(&item).unwrap();
@@ -184,7 +202,7 @@ pub async fn search(
         hits_buf = writer.into_inner().unwrap();
     }
 
-    // finally aggs result
+    // finally aggs result  接下来是处理聚合结果
     let mut aggs_buf = Vec::new();
     for (key, batches) in results {
         if key == "query" || batches.is_empty() {
@@ -205,6 +223,7 @@ pub async fn search(
         }
         writer.finish().unwrap();
         buf = writer.into_inner().unwrap();
+        // 挨个写入
         aggs_buf.push(cluster_rpc::SearchAggResponse {
             name: key.strip_prefix("agg_").unwrap().to_string(),
             hits: buf,

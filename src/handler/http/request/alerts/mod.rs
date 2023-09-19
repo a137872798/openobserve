@@ -41,15 +41,20 @@ use crate::service::alerts;
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/{stream_name}/alerts/{alert_name}")]
+#[post("/{org_id}/{stream_name}/alerts/{alert_name}")]     // 保存告警数据
 pub async fn save_alert(
     path: web::Path<(String, String, String)>,
     alert: web::Json<Alert>,
     req: HttpRequest,
 ) -> Result<HttpResponse, Error> {
+
+    // 从path上获取 本次指定的stream 以及告警名
     let (org_id, stream_name, name) = path.into_inner();
 
+    // 从uri上拿到路径参数
     let query = web::Query::<HashMap<String, String>>::from_query(req.query_string()).unwrap();
+
+    // 获取streamType
     let mut stream_type = match get_stream_type_from_request(&query) {
         Ok(v) => v,
         Err(e) => {
@@ -61,9 +66,13 @@ pub async fn save_alert(
             )
         }
     };
+
+    // 允许type为None  这样默认是logs 
     if stream_type.is_none() {
         stream_type = Some(StreamType::Logs)
     }
+
+    // 将告警存储到db中 非实时告警 还会使得一个trigger对象入库
     alerts::save_alert(
         org_id,
         stream_name,
@@ -89,9 +98,10 @@ pub async fn save_alert(
         (status = 200, description="Success", content_type = "application/json", body = AlertList),
     )
 )]
-#[get("/{org_id}/{stream_name}/alerts")]
+#[get("/{org_id}/{stream_name}/alerts")]   // 查询针对某个stream的所有告警
 async fn list_stream_alerts(path: web::Path<(String, String)>, req: HttpRequest) -> impl Responder {
     let (org_id, stream_name) = path.into_inner();
+    // 从uri上解析 stream_type
     let query = web::Query::<HashMap<String, String>>::from_query(req.query_string()).unwrap();
     let mut stream_type = match get_stream_type_from_request(&query) {
         Ok(v) => v,
@@ -107,6 +117,7 @@ async fn list_stream_alerts(path: web::Path<(String, String)>, req: HttpRequest)
     if stream_type.is_none() {
         stream_type = Some(StreamType::Logs)
     }
+    // 查询一组告警
     alerts::list_alert(org_id, Some(stream_name.as_str()), stream_type).await
 }
 
@@ -125,7 +136,7 @@ async fn list_stream_alerts(path: web::Path<(String, String)>, req: HttpRequest)
         (status = 200, description="Success", content_type = "application/json", body = AlertList),
     )
 )]
-#[get("/{org_id}/alerts")]
+#[get("/{org_id}/alerts")]  // 获取某个org下的所有告警
 async fn list_alerts(path: web::Path<String>, req: HttpRequest) -> impl Responder {
     let org_id = path.into_inner();
     let query = web::Query::<HashMap<String, String>>::from_query(req.query_string()).unwrap();
@@ -143,6 +154,8 @@ async fn list_alerts(path: web::Path<String>, req: HttpRequest) -> impl Responde
     if stream_type.is_none() {
         stream_type = Some(StreamType::Logs)
     }
+
+    // 通过org 和 type检索告警
     alerts::list_alert(org_id, None, stream_type).await
 }
 
@@ -164,7 +177,7 @@ async fn list_alerts(path: web::Path<String>, req: HttpRequest) -> impl Responde
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/{stream_name}/alerts/{alert_name}")]
+#[get("/{org_id}/{stream_name}/alerts/{alert_name}")]  // 查询一个具体的告警
 async fn get_alert(path: web::Path<(String, String, String)>, req: HttpRequest) -> impl Responder {
     let (org_id, stream_name, name) = path.into_inner();
     let query = web::Query::<HashMap<String, String>>::from_query(req.query_string()).unwrap();
@@ -203,7 +216,7 @@ async fn get_alert(path: web::Path<(String, String, String)>, req: HttpRequest) 
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[delete("/{org_id}/{stream_name}/alerts/{alert_name}")]
+#[delete("/{org_id}/{stream_name}/alerts/{alert_name}")]  // 删除某个告警
 async fn delete_alert(
     path: web::Path<(String, String, String)>,
     req: HttpRequest,
@@ -245,7 +258,7 @@ async fn delete_alert(
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[put("/{org_id}/{stream_name}/alerts/{alert_name}/trigger")]
+#[put("/{org_id}/{stream_name}/alerts/{alert_name}/trigger")]  // 检查某个告警关联的触发对象
 async fn trigger_alert(
     path: web::Path<(String, String, String)>,
     req: HttpRequest,

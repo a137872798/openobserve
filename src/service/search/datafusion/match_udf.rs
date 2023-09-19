@@ -28,14 +28,14 @@ use std::sync::Arc;
 
 use crate::common::utils::str;
 
-/// Implementation of match_range
+/// Implementation of match_range    datafusion 支持用户自行实现函数  这也是使得OO支持自有函数的关键
 pub(crate) static MATCH_UDF: Lazy<ScalarUDF> = Lazy::new(|| {
     create_udf(
         super::MATCH_UDF_NAME,
         // expects two string
-        vec![DataType::Utf8, DataType::Utf8],
+        vec![DataType::Utf8, DataType::Utf8],  // 字段值/待匹配的字面量
         // returns boolean
-        Arc::new(DataType::Boolean),
+        Arc::new(DataType::Boolean),  // 是否匹配
         Volatility::Stable,
         match_expr_impl(false),
     )
@@ -54,9 +54,11 @@ pub(crate) static MATCH_IGNORE_CASE_UDF: Lazy<ScalarUDF> = Lazy::new(|| {
     )
 });
 
-/// match function for datafusion
+/// match function for datafusion   自定义实现 str_match函数
 pub fn match_expr_impl(case_insensitive: bool) -> ScalarFunctionImplementation {
     let func = move |args: &[ArrayRef]| -> datafusion::error::Result<ArrayRef> {
+
+        // 2个参数
         if args.len() != 2 {
             return Err(DataFusionError::SQL(ParserError::ParserError(
                 "match UDF expects two string".to_string(),
@@ -64,6 +66,7 @@ pub fn match_expr_impl(case_insensitive: bool) -> ScalarFunctionImplementation {
         }
 
         // 1. cast both arguments to string. These casts MUST be aligned with the signature or this function panics!
+        // 一个是字段值 一个是要匹配的字面量
         let haystack = &args[0]
             .as_any()
             .downcast_ref::<StringArray>()

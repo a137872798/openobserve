@@ -89,6 +89,7 @@ impl ObjectStore for Remote {
         Err(Error::NotImplemented)
     }
 
+    // 跟local的代码一样 区别就是client
     async fn get(&self, location: &Path) -> Result<GetResult> {
         let start = std::time::Instant::now();
         let file = location.to_string();
@@ -269,11 +270,13 @@ fn init_gcp_config() -> object_store::Result<object_store::gcp::GoogleCloudStora
     builder.build()
 }
 
+// 初始化 ObjectStore 远端服务器
 fn init_client() -> Box<dyn object_store::ObjectStore> {
     if CONFIG.common.print_key_config {
         log::info!("s3 init config: {:?}", CONFIG.s3);
     }
 
+    // 这里时各种配置
     match CONFIG.s3.provider.as_str() {
         "aws" | "s3" => match init_aws_config() {
             Ok(client) => Box::new(client),

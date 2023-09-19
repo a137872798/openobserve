@@ -22,6 +22,7 @@ use super::db;
 use crate::common::meta::alert::Trigger;
 use crate::common::meta::http::HttpResponse as MetaHttpResponse;
 
+// 将触发器存储到db中
 #[tracing::instrument(skip_all)]
 pub async fn save_trigger(
     alert_name: &str,

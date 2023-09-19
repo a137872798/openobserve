@@ -31,24 +31,29 @@ use crate::handler::grpc::cluster_rpc;
 pub mod destinations;
 pub mod templates;
 
+// 存储告警数据
 #[tracing::instrument(skip_all)]
 pub async fn save_alert(
     org_id: String,
     stream_name: String,
     stream_type: StreamType,
-    name: String,
-    mut alert: Alert,
+    name: String,   // 告警名
+    mut alert: Alert,  // 告警实体
 ) -> Result<HttpResponse, Error> {
+
+    // 为告警设置stream相关的属性
     alert.stream = stream_name.to_string();
     alert.name = name.to_string();
     alert.stream_type = Some(stream_type);
     let in_dest = alert.clone().destination;
 
     // before saving alert check alert destination
+    // 查询告警目的地信息
     let dest = db::alerts::destinations::get(&org_id, &in_dest)
         .await
         .unwrap();
 
+    // 该告警指定的目的地不存在
     if dest.is_none() {
         return Ok(HttpResponse::NotFound().json(MetaHttpResponse::error(
             http::StatusCode::NOT_FOUND.into(),
@@ -61,6 +66,8 @@ pub async fn save_alert(
         .await
         .unwrap();
     let fields = schema.to_cloned_fields();
+
+    // 关联的schema 没有字段
     if fields.is_empty() {
         return Ok(HttpResponse::NotFound().json(MetaHttpResponse::error(
             http::StatusCode::NOT_FOUND.into(),
@@ -68,7 +75,10 @@ pub async fn save_alert(
         )));
     }
 
+    // 如果没有查询语句  告警还要关联一个查询语句
     if alert.query.is_none() {
+
+        // 默认查询所有数据
         alert.query = Some(Query {
             sql: format!("select * from {stream_name}"),
             start_time: 0,
@@ -83,11 +93,15 @@ pub async fn save_alert(
             uses_zo_fn: false,
             query_fn: None,
         });
+
+        // 表示该告警是刚产生的
         alert.is_real_time = true;
 
+        // 检查fields中 是否包含 告警条件列
         let mut local_fields = fields.clone();
         local_fields.retain(|field| field.name().eq(&alert.condition.column));
 
+        // 表示产生告警的条件列 并没有在stream中发现
         if local_fields.is_empty() {
             return Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
@@ -97,11 +111,15 @@ pub async fn save_alert(
                 ),
             )));
         }
+
+        // 该列是否是数字类型
         alert.condition.is_numeric = Some(!matches!(
             local_fields[0].data_type(),
             DataType::Boolean | DataType::Utf8
         ));
     } else {
+
+        // 检查sql的有效性
         let meta_req = meta::search::Request {
             query: alert.clone().query.unwrap(),
             aggs: HashMap::new(),
@@ -128,6 +146,7 @@ pub async fn save_alert(
     .await
     .unwrap();
     // For non-ingest alert set trigger immediately
+    // 非实时告警 就是不会立即通知 而是等待触发 
     if !alert.is_real_time {
         let trigger = Trigger {
             timestamp: Utc::now().timestamp_micros(),
@@ -149,6 +168,7 @@ pub async fn save_alert(
     )))
 }
 
+// 列举某个stream相关的所有告警 
 #[tracing::instrument]
 pub async fn list_alert(
     org_id: String,
@@ -161,6 +181,7 @@ pub async fn list_alert(
     Ok(HttpResponse::Ok().json(AlertList { list: alerts_list }))
 }
 
+// 删除某个告警 
 #[tracing::instrument]
 pub async fn delete_alert(
     org_id: String,
@@ -187,6 +208,7 @@ pub async fn delete_alert(
     }
 }
 
+// 查询某个告警
 #[tracing::instrument]
 pub async fn get_alert(
     org_id: String,

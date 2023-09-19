@@ -65,22 +65,27 @@ static RE_WHERE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i) where (.*)").unwra
 static RE_FIELD_FN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)([a-zA-Z0-9_]+)\((['"a-zA-Z0-9_*]+)"#).unwrap());
 
+// 执行sql查询结果
 pub async fn sql(
-    session: &SearchSession,
-    schema: Arc<Schema>,
-    rules: &HashMap<String, DataType>,
-    sql: &Arc<Sql>,
-    files: &[FileKey],
-    file_type: FileType,
+    session: &SearchSession,  // 表示从哪里加载文件内容
+    schema: Arc<Schema>,   // 本次采用的schema
+    rules: &HashMap<String, DataType>,   // 某些field需要转换成该类型
+    sql: &Arc<Sql>,   // 本次处理的sql  其中还包含 agg_sql
+    files: &[FileKey],  // 本次要读取的文件
+    file_type: FileType,  // 表示文件内容是 JSON/Parquet
 ) -> Result<HashMap<String, Vec<RecordBatch>>> {
+
+    // 文件为空 返回空结果
     if files.is_empty() {
         return Ok(HashMap::new());
     }
 
     let start = std::time::Instant::now();
+
+    // 要基于一组文件数据作为一个虚拟表 tbl
     let mut ctx = register_table(session, schema.clone(), "tbl", files, file_type.clone()).await?;
 
-    // register UDF
+    // register UDF   注册用户函数
     register_udf(&mut ctx, &sql.org_id).await;
 
     let mut result: HashMap<String, Vec<RecordBatch>> = HashMap::new();
@@ -88,6 +93,7 @@ pub async fn sql(
     // query sql
     result.insert(
         "query".to_string(),
+        // 将外部查询的结果设置到result中
         exec_query(
             &ctx,
             session,
@@ -103,12 +109,14 @@ pub async fn sql(
     //get alias from context query for agg sql
     let meta_sql = sql::Sql::new(&sql.query_context);
 
+    // 挨个处理聚合语句
     for (name, orig_agg_sql) in sql.aggs.iter() {
         // Debug SQL
         if CONFIG.common.print_key_sql {
             log::info!("Query agg sql: {}", orig_agg_sql.0);
         }
 
+        // 这个是sql语句
         let mut agg_sql = orig_agg_sql.0.to_owned();
         if meta_sql.is_ok() {
             for alias in &meta_sql.as_ref().unwrap().field_alias {
@@ -116,6 +124,7 @@ pub async fn sql(
             }
         }
 
+        // 如果 query_context 不为空 在exec_query中 ctx的tlb表会被替换成中间表  否则就还是原始表
         let mut df = match ctx.sql(&agg_sql).await {
             Ok(df) => df,
             Err(e) => {
@@ -129,6 +138,7 @@ pub async fn sql(
             }
         };
 
+        // 追加别名
         if !rules.is_empty() {
             let fields = df.schema().fields();
             let mut exprs = Vec::with_capacity(fields.len());
@@ -147,6 +157,8 @@ pub async fn sql(
             }
             df = df.select(exprs)?;
         }
+
+        // 设置查询结果
         let batches = df.collect().await?;
         result.insert(format!("agg_{name}"), batches);
         log::info!(
@@ -155,7 +167,7 @@ pub async fn sql(
         );
     }
 
-    // drop table
+    // drop table  此时已经查询完所有数据 注销tbl表
     ctx.deregister_table("tbl")?;
     log::info!(
         "Query all took {:.3} seconds.",
@@ -165,6 +177,7 @@ pub async fn sql(
     Ok(result)
 }
 
+// 执行查询
 async fn exec_query(
     ctx: &SessionContext,
     session: &SearchSession,
@@ -177,6 +190,8 @@ async fn exec_query(
     let start = std::time::Instant::now();
 
     let mut fast_mode = false;
+
+    // 拿到上下文和 schema
     let (q_ctx, schema) = if sql.fast_mode && session.storage_type != StorageType::Tmpfs {
         fast_mode = true;
         get_fast_mode_ctx(session, schema, sql, files, file_type).await?
@@ -186,31 +201,44 @@ async fn exec_query(
 
     // get used UDF
     let mut field_fns = vec![];
+
+    // sql片段
     let mut sql_parts = vec![];
     for fn_name in crate::common::utils::functions::get_all_transform_keys(&sql.org_id).await {
+        // 代表使用到了这个函数
         if sql.origin_sql.contains(&fn_name) {
             field_fns.push(fn_name.clone());
         }
     }
 
+    // 非简单模式 并且 转换函数不为空 或者查询函数不为空
     if !fast_mode && (!field_fns.is_empty() || sql.query_fn.is_some()) {
+
+        // 从sql中获取where部分
         if let Some(caps) = RE_WHERE.captures(&sql.origin_sql) {
+
+            // 这个是where前的部分
             sql_parts.insert(
                 0,
                 sql.origin_sql
                     .strip_suffix(caps.get(0).unwrap().as_str())
                     .unwrap(),
             );
+            // where后的部分
             sql_parts.insert(1, caps.get(1).unwrap().as_str());
         };
     }
 
     // query
     let query = if !&sql.query_context.is_empty() {
+        // 将原表名 替换成tbl
         sql.query_context.replace(&sql.stream_name, "tbl").clone()
+
+        // 这个意思应该是使用query_fn 来处理结果集  现在只需要时间条件查询中间结果集即可
     } else if !fast_mode
         && ((!field_fns.is_empty() && !sql_parts.is_empty()) || sql.query_fn.is_some())
     {
+        // 添加一个时间条件
         match sql.meta.time_range {
             Some(ts_range) => format!(
                 "{} where {} >= {} AND {} < {}",
@@ -223,6 +251,7 @@ async fn exec_query(
             None => sql_parts[0].to_owned(),
         }
     } else {
+        // 先忽略其他函数
         sql.origin_sql.clone()
     };
 
@@ -231,6 +260,7 @@ async fn exec_query(
         log::info!("Query sql: {}", query);
     }
 
+    // 执行sql语句 得到数据集
     let mut df = match q_ctx.sql(&query).await {
         Ok(df) => df,
         Err(e) => {
@@ -244,6 +274,7 @@ async fn exec_query(
         }
     };
 
+    // 将字段转换的行为 作为一个别名查询
     if !rules.is_empty() {
         let fields = df.schema().fields();
         let mut exprs = Vec::with_capacity(fields.len());
@@ -263,13 +294,17 @@ async fn exec_query(
         df = df.select(exprs)?;
     }
 
+    // 没有什么后置函数  可以直接返回查询结果
     if field_fns.is_empty() && sql.query_fn.is_none() {
         let batches = df.clone().collect().await?;
         log::info!("Query took {:.3} seconds.", start.elapsed().as_secs_f64());
         return Ok(batches);
     }
 
+    // 代表之后的查询需要基于当前查询结果
     if !sql.query_context.is_empty() {
+
+        // 以df作为新表
         q_ctx.deregister_table("tbl")?;
         q_ctx.register_table("tbl", df.clone().into_view())?;
         // re-register to ctx
@@ -277,9 +312,12 @@ async fn exec_query(
             ctx.deregister_table("tbl")?;
             ctx.register_table("tbl", df.into_view())?;
         }
+
+        // 处理查询函数
     } else if sql.query_fn.is_some() {
         let batches = df.collect().await?;
         let batches_ref: Vec<&RecordBatch> = batches.iter().collect();
+        // 使用 vrl 语法处理结果集
         match handle_query_fn(sql.query_fn.clone().unwrap(), &batches_ref, &sql.org_id) {
             None => {
                 return Err(datafusion::error::DataFusionError::Execution(
@@ -288,20 +326,27 @@ async fn exec_query(
             }
             Some(resp) => {
                 if !resp.is_empty() {
+                    // 将结果模拟成一个内存表
                     let mem_table = datafusion::datasource::MemTable::try_new(
                         resp.first().unwrap().schema(),
                         vec![resp],
                     )?;
+
+                    // 将作用查询函数后的结果作为中间表
                     q_ctx.deregister_table("tbl")?;
                     q_ctx.register_table("tbl", Arc::new(mem_table))?;
                     // -- fix mem table, add missing columns
                     let mut tmp_df = q_ctx.table("tbl").await?;
+
+                    // 检查处理后的结果的新字段
                     let tmp_fields = tmp_df
                         .schema()
                         .field_names()
                         .iter()
                         .map(|f| f.strip_prefix("tbl.").unwrap().to_string())
                         .collect::<Vec<String>>();
+
+                    // 找到新增的字段
                     let need_add_columns = schema
                         .fields()
                         .iter()
@@ -312,6 +357,7 @@ async fn exec_query(
                         for column in need_add_columns {
                             tmp_df = tmp_df.with_column(column, lit(ScalarValue::Null))?;
                         }
+                        // 将处理结果作为中间结果集
                         q_ctx.deregister_table("tbl")?;
                         q_ctx.register_table("tbl", tmp_df.clone().into_view())?;
                         // re-register to ctx
@@ -330,16 +376,20 @@ async fn exec_query(
         ));
     }
 
+    // 现在可以继续之前的查询了
     let mut where_query = if !sql_parts.is_empty() {
         format!("select * from tbl where {}", &sql_parts[1])
     } else {
         sql.origin_sql.clone()
     };
+
+    // 如果有别名的话 替换别名
     for alias in &sql.meta.field_alias {
         replace_in_query(&alias.1, &mut where_query, true);
     }
     let additional_clause = where_query.clone();
 
+    // 使用where条件 进一步过滤结果集
     let df = match q_ctx.sql(&additional_clause).await {
         Ok(df) => df,
         Err(e) => {
@@ -357,6 +407,7 @@ async fn exec_query(
     Ok(batches)
 }
 
+// 表示执行的是一个简单的sql
 async fn get_fast_mode_ctx(
     session: &SearchSession,
     schema: Arc<Schema>,
@@ -369,7 +420,11 @@ async fn get_fast_mode_ctx(
 
     let mut loaded_records = 0;
     let mut new_files = Vec::new();
+
+    // 代表总计需要查询多少条记录
     let needs = sql.meta.limit + sql.meta.offset;
+
+    // 好像默认是按时间倒序  所以文件也是从后往前读吧
     for i in (0..files.len()).rev() {
         loaded_records += files.get(i).unwrap().meta.records as usize;
         new_files.push(files[i].clone());
@@ -378,10 +433,13 @@ async fn get_fast_mode_ctx(
         }
     }
 
+    // 针对fast模式 的session
     let fast_session = SearchSession {
         id: format!("{}-fast", session.id),
         storage_type: session.storage_type.clone(),
     };
+
+    // 产生表 并注册自定义函数
     let mut ctx =
         register_table(&fast_session, schema.clone(), "tbl", &new_files, file_type).await?;
 
@@ -391,6 +449,7 @@ async fn get_fast_mode_ctx(
     Ok((ctx, schema))
 }
 
+// 替换别名
 fn replace_in_query(replace_pat: &str, where_query: &mut String, is_alias: bool) {
     let re1 = Regex::new(&format!("(?i){}_([a-zA-Z0-9_-]*)", replace_pat)).unwrap();
     if let Some(caps) = re1.captures(&*where_query) {
@@ -408,6 +467,7 @@ fn replace_in_query(replace_pat: &str, where_query: &mut String, is_alias: bool)
     }
 }
 
+// 将多个查询结果进行merge   因为某些查询是聚合查询 所以并不是简单的把多次查询结果放在一起就可以的
 pub async fn merge(
     org_id: &str,
     offset: usize,
@@ -415,16 +475,18 @@ pub async fn merge(
     sql: &str,
     batches: &Vec<Vec<RecordBatch>>,
 ) -> Result<Vec<Vec<RecordBatch>>> {
+    // 没有记录需要处理
     if batches.is_empty() {
         return Ok(vec![]);
     }
+    // 只有一组数据 不需要处理
     if offset == 0 && batches.len() == 1 && batches[0].len() <= 1 {
         return Ok(batches.to_owned());
     }
 
     // let start = std::time::Instant::now();
 
-    // write temp file
+    // write temp file    将数据以parquet格式写入到内存中    schema 是最终合并后的schema
     let (schema, work_dir) = merge_write_recordbatch(batches)?;
     // log::info!(
     //     "merge_write_recordbatch took {:.3} seconds.",
@@ -466,6 +528,8 @@ pub async fn merge(
     let listing_options = ListingOptions::new(Arc::new(file_format))
         .with_file_extension(FileType::PARQUET.get_ext())
         .with_target_partitions(CONFIG.limit.cpu_num);
+
+    // 现在就是基于这组中间文件重新查询
     let list_url = format!("tmpfs://{work_dir}");
     let prefix = match ListingTableUrl::parse(list_url) {
         Ok(url) => url,
@@ -505,6 +569,8 @@ pub async fn merge(
         }
     };
     let schema: Schema = df.schema().into();
+
+    // 执行查询产生结果
     let mut batches = df.collect().await?;
     if batches.len() > 1 {
         // try to merge recordbatch
@@ -529,19 +595,26 @@ pub async fn merge(
     Ok(vec![batches])
 }
 
+// 这里只是将数据写入到内存中
 fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>, String)> {
     let mut i = 0;
     let work_dir = format!("/tmp/merge/{}/", chrono::Utc::now().timestamp_micros());
     let mut schema = Schema::empty();
+
+    // 挨个处理每批数据集
     for item in batches.iter() {
         if item.is_empty() {
             continue;
         }
+        // 处理每块行数据
         for row in item.iter() {
             if row.num_rows() == 0 {
                 continue;
             }
+            // 这里记录的是总行数
             i += 1;
+
+            // 获取该块行记录的 schema  因为合并过程中 这些记录的schema可能会不一样
             let row_schema = row.schema();
             let filtered_fields: Vec<Field> = row_schema
                 .fields()
@@ -550,8 +623,10 @@ fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>,
                 .map(|arc_field| (**arc_field).clone())
                 .collect();
             let row_schema = Arc::new(Schema::new(filtered_fields));
+            // 不断的合并schema
             schema = Schema::try_merge(vec![schema.clone(), row_schema.as_ref().to_owned()])?;
 
+            // 这里没有真的产生文件
             let file_name = format!("{work_dir}{i}.parquet");
             let mut buf_parquet = Vec::new();
             let mut writer = ArrowWriter::try_new(&mut buf_parquet, row_schema.clone(), None)?;
@@ -563,6 +638,7 @@ fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>,
     Ok((Arc::new(schema), work_dir))
 }
 
+// 因为merge场景 要重写sql
 fn merge_rewrite_sql(sql: &str, schema: Arc<Schema>) -> Result<String> {
     let mut sql = sql.to_string();
     let mut fields = Vec::new();
@@ -1016,7 +1092,7 @@ pub fn create_runtime_env() -> Result<RuntimeEnv> {
     RuntimeEnv::new(rn_config)
 }
 
-// 获得转换用的上下文环境
+// 准备使用datafusion的上下文
 pub fn prepare_datafusion_context() -> Result<SessionContext, DataFusionError> {
     let runtime_env = create_runtime_env()?;
     let session_config = create_session_config();
@@ -1026,6 +1102,7 @@ pub fn prepare_datafusion_context() -> Result<SessionContext, DataFusionError> {
     ))
 }
 
+// 注册内置函数
 async fn register_udf(ctx: &mut SessionContext, _org_id: &str) {
     ctx.register_udf(super::match_udf::MATCH_UDF.clone());
     ctx.register_udf(super::match_udf::MATCH_IGNORE_CASE_UDF.clone());
@@ -1042,15 +1119,16 @@ async fn register_udf(ctx: &mut SessionContext, _org_id: &str) {
     }
 }
 
+// 基于文件生成虚拟表
 pub async fn register_table(
     session: &SearchSession,
     schema: Arc<Schema>,
-    table_name: &str,
-    files: &[FileKey],
-    file_type: FileType,
+    table_name: &str,   // 采用的表名
+    files: &[FileKey],  // 一组文件
+    file_type: FileType,  // 描述文件的内容类型
 ) -> Result<SessionContext> {
     let ctx = prepare_datafusion_context()?;
-    // Configure listing options
+    // Configure listing options   生成一个选项对象
     let listing_options = match file_type {
         FileType::PARQUET => {
             let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
@@ -1071,6 +1149,7 @@ pub async fn register_table(
         }
     };
 
+    // 根据文件类型 生成不同协议 并表示准备使用这些文件
     let prefix = if session.storage_type.eq(&StorageType::FsMemory) {
         file_list::set(&session.id, files).await;
         format!("fsm:///{}/", session.id)
@@ -1093,6 +1172,7 @@ pub async fn register_table(
         }
     };
 
+    // ListingTable 就代表将一组文件作为表数据
     let config = ListingTableConfig::new(prefix)
         .with_listing_options(listing_options)
         .with_schema(schema);
@@ -1102,6 +1182,7 @@ pub async fn register_table(
     Ok(ctx)
 }
 
+// 使用查询函数处理结果
 fn handle_query_fn(
     query_fn: String,
     batches: &[&RecordBatch],
@@ -1113,14 +1194,17 @@ fn handle_query_fn(
     }
 }
 
+// 将查询函数作用在json上
 fn apply_query_fn(
     query_fn_src: String,
-    in_batch: Vec<json::Map<String, json::Value>>,
+    in_batch: Vec<json::Map<String, json::Value>>,  // 结果集
     org_id: &str,
 ) -> Result<Option<Vec<RecordBatch>>> {
     use vector_enrichment::TableRegistry;
 
     let mut resp = vec![];
+
+    // TODO 这个查询函数 就是基于 vrl语法的  先忽略
     let mut runtime = crate::common::utils::functions::init_vrl_runtime();
     match crate::service::ingestion::compile_vrl_function(&query_fn_src, org_id) {
         Ok(program) => {

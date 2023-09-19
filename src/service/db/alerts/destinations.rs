@@ -21,16 +21,20 @@ use crate::common::{
 };
 use crate::service::db;
 
+// 获取目的地信息   目的地是以组织为单位的
 pub async fn get(
     org_id: &str,
-    name: &str,
+    name: &str,   // 目的地名字
 ) -> Result<Option<AlertDestinationResponse>, anyhow::Error> {
     let map_key = format!("{org_id}/{name}");
+    // 尝试从缓存中获取
     let value: Option<AlertDestinationResponse> = if ALERTS_DESTINATIONS.contains_key(&map_key) {
         let dest = ALERTS_DESTINATIONS.get(&map_key).unwrap().clone();
         let template = db::alerts::templates::get(org_id, &dest.template).await?;
         Some(dest.to_dest_resp(template))
     } else {
+
+        // 缓存不存在 则从db获取
         let db = &infra_db::DEFAULT;
         let key = format!("/destinations/{org_id}/{name}");
         match db.get(&key).await {

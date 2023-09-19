@@ -26,11 +26,11 @@ use datafusion::{
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
-/// Implementation of regexp_match
+/// Implementation of regexp_match    用户定义的正则匹配表达式
 pub(crate) static REGEX_MATCH_UDF: Lazy<ScalarUDF> = Lazy::new(|| {
     create_udf(
         super::REGEX_MATCH_UDF_NAME,
-        // takes two arguments: regex, pattern
+        // takes two arguments: regex, pattern     一个是字段值 一个是正则表达式
         vec![DataType::Utf8, DataType::Utf8],
         Arc::new(DataType::Boolean),
         Volatility::Stable,
@@ -72,6 +72,7 @@ pub fn regex_match_expr_impl(matches: bool) -> ScalarFunctionImplementation {
     let func = move |args: &[ColumnarValue]| {
         assert_eq!(args.len(), 2); // only works over a single column and pattern at a time.
 
+        // 要求正则是一个标量值
         let pattern = match &args[1] {
             // second arg was array (not constant)
             ColumnarValue::Array(_) => {
@@ -94,7 +95,7 @@ pub fn regex_match_expr_impl(matches: bool) -> ScalarFunctionImplementation {
         })?;
 
         // Attempt to make the pattern compatible with what is accepted by
-        // the golang regexp library which is different than Rust's regexp
+        // the golang regexp library which is different than Rust's regexp   对正则做兼容处理
         let pattern = clean_non_meta_escapes(pattern);
 
         let pattern = regex::Regex::new(&pattern)
@@ -107,6 +108,7 @@ pub fn regex_match_expr_impl(matches: bool) -> ScalarFunctionImplementation {
                     .map(|row| {
                         // in arrow, any value can be null.
                         // Here we decide to make our UDF to return null when either base or exponent is null.
+                        // 将每行是否匹配的结果组成一个 BooleanArray
                         row.map(|v| pattern.is_match(v) == matches)
                     })
                     .collect::<BooleanArray>();
@@ -150,6 +152,7 @@ fn is_valid_character_after_escape(c: char) -> bool {
 /// golang, used by the influx storage rpc.
 ///
 /// See <https://github.com/rust-lang/regex/issues/501> for more details
+/// 处理正则表达式  主要是为了一些兼容性处理
 fn clean_non_meta_escapes(pattern: &str) -> String {
     if pattern.is_empty() {
         return pattern.to_string();

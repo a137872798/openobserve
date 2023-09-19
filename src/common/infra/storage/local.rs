@@ -89,6 +89,7 @@ impl ObjectStore for Local {
         Err(Error::NotImplemented)
     }
 
+    // 使用本地磁盘模拟 ObjectStore时  使用文件名查询数据
     async fn get(&self, location: &Path) -> Result<GetResult> {
         let start = std::time::Instant::now();
         let file = location.to_string();
@@ -205,6 +206,7 @@ impl ObjectStore for Local {
     }
 }
 
+// 模拟一个客户端
 fn init_client() -> Box<dyn object_store::ObjectStore> {
     Box::new(
         LocalFileSystem::new_with_prefix(

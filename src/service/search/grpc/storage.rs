@@ -38,14 +38,16 @@ use crate::service::{
 };
 
 /// search in remote object storage
+/// 从 ObjectStore上查询数据
 #[tracing::instrument(name = "service:search:grpc:storage:enter", skip_all, fields(org_id = sql.org_id, stream_name = sql.stream_name))]
 pub async fn search(
     session_id: &str,
-    sql: Arc<Sql>,
-    file_list: &[FileKey],
-    stream_type: meta::StreamType,
+    sql: Arc<Sql>,    // 本次查询的sql
+    file_list: &[FileKey],  // 本次需要查询的所有文件
+    stream_type: meta::StreamType,  // 描述数据流类型
 ) -> super::SearchResult {
     // fetch all schema versions, group files by version
+    // 获取往期所有的schema
     let schema_versions =
         match db::schema::get_versions(&sql.org_id, &sql.stream_name, stream_type).await {
             Ok(versions) => versions,
@@ -64,15 +66,19 @@ pub async fn search(
     let schema_latest = schema_versions.last().unwrap();
     let schema_latest_id = schema_versions.len() - 1;
 
+    // 获取stream的分区级别    而wal是根据时间条件查看符合范围的文件
     let stream_settings = stream::stream_settings(schema_latest).unwrap_or_default();
     let partition_time_level =
         stream::unwrap_partition_time_level(stream_settings.partition_time_level, stream_type);
 
     // get file list
     let files = match file_list.is_empty() {
+        // TODO 记得在转发请求前 都已经做好分配了
         true => get_file_list(&sql, stream_type, partition_time_level).await?,
         false => file_list.to_vec(),
     };
+
+    // 列表为空 不用处理数据
     if files.is_empty() {
         return Ok((HashMap::new(), ScanStats::default()));
     }
@@ -83,9 +89,12 @@ pub async fn search(
         files.len(),
     );
 
+    // key 应该是编号
     let mut files_group: HashMap<usize, Vec<FileKey>> =
         HashMap::with_capacity(schema_versions.len());
     let mut scan_stats = ScanStats::new();
+
+    // 所有数据都使用一个schema
     if !CONFIG.common.widening_schema_evolution || schema_versions.len() == 1 {
         let files = files.to_vec();
         scan_stats = match file_list::calculate_files_size(&files).await {
@@ -99,13 +108,14 @@ pub async fn search(
         };
         files_group.insert(schema_latest_id, files);
     } else {
+        // 这里不同的文件可能使用不同的schema
         scan_stats.files = files.len() as i64;
         for file in files.iter() {
             // calculate scan size
             scan_stats.records += file.meta.records;
             scan_stats.original_size += file.meta.original_size;
             scan_stats.compressed_size += file.meta.compressed_size;
-            // check schema version
+            // check schema version  检查该文件出现时间 与 schema的时间
             let schema_ver_id = match db::schema::filter_schema_version_id(
                 &schema_versions,
                 file.meta.min_ts,
@@ -139,6 +149,7 @@ pub async fn search(
 
     // if scan_compressed_size > 80% of total memory cache, skip memory cache
     let storage_type = if !CONFIG.memory_cache.enabled
+        // 当文件数据 超过了某个大小后 就不经过缓存 而是直接读取文件
         || scan_stats.compressed_size > CONFIG.memory_cache.skip_size as i64
     {
         StorageType::FsNoCache
@@ -148,9 +159,10 @@ pub async fn search(
 
     // load files to local cache
     if storage_type == StorageType::FsMemory {
+        // 返回的是加载失败的文件
         let deleted_files = cache_parquet_files(&files).await?;
         if !deleted_files.is_empty() {
-            // remove deleted files from files_group
+            // remove deleted files from files_group  移除被删除的文件
             for (_, g_files) in files_group.iter_mut() {
                 g_files.retain(|f| !deleted_files.contains(&f.key));
             }
@@ -164,6 +176,8 @@ pub async fn search(
     }
 
     let mut tasks = Vec::new();
+
+    // 现在处理每个版本schema的文件数据
     for (ver, files) in files_group {
         let schema = Arc::new(
             schema_versions[ver]
@@ -175,7 +189,7 @@ pub async fn search(
             id: format!("{session_id}-{ver}"),
             storage_type: storage_type.clone(),
         };
-        // cacluate the diff between latest schema and group schema
+        // cacluate the diff between latest schema and group schema   记录同名不同类型的field
         let mut diff_fields = HashMap::new();
         if CONFIG.common.widening_schema_evolution && ver != schema_latest_id {
             let group_fields = schema.fields();
@@ -190,12 +204,13 @@ pub async fn search(
         let datafusion_span = info_span!("service:search:grpc:storage:datafusion", org_id = sql.org_id,stream_name = sql.stream_name, stream_type = ?stream_type);
         let task = tokio::task::spawn(
             async move {
+                // 执行查询 注意标记文件格式为 parquet
                 exec::sql(
                     &session,
                     schema,
                     &diff_fields,
                     &sql,
-                    &files,
+                    &files,  // 待处理的文件
                     FileType::PARQUET,
                 )
                 .await
@@ -205,6 +220,7 @@ pub async fn search(
         tasks.push(task);
     }
 
+    // 等待查询完成
     let mut results: HashMap<String, Vec<RecordBatch>> = HashMap::new();
     for task in tasks {
         match task.await {
@@ -267,6 +283,7 @@ async fn get_file_list(
     Ok(files)
 }
 
+// 从storage查询parquet文件
 #[tracing::instrument(name = "service:search:grpc:storage:cache_parquet_files", skip_all)]
 async fn cache_parquet_files(files: &[FileKey]) -> Result<Vec<String>, Error> {
     let mut tasks = Vec::new();
@@ -275,7 +292,10 @@ async fn cache_parquet_files(files: &[FileKey]) -> Result<Vec<String>, Error> {
         let file_name = file.key.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let task: tokio::task::JoinHandle<Option<String>> = tokio::task::spawn(async move {
+
+            // 表示文件数据还没有加载到内存
             if !file_data::exist(&file_name) {
+                // 从 ObjectStore读取数据 拉取到内存
                 if let Err(e) = file_data::download(&file_name).await {
                     log::info!("search->storage: download file err: {}", e);
                     if e.to_string().to_lowercase().contains("not found") {
@@ -297,6 +317,7 @@ async fn cache_parquet_files(files: &[FileKey]) -> Result<Vec<String>, Error> {
     for task in tasks {
         match task.await {
             Ok(ret) => {
+                // 代表出错的文件
                 if let Some(file) = ret {
                     delete_files.push(file);
                 }

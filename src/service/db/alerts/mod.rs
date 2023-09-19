@@ -26,6 +26,7 @@ use crate::common::{
 pub mod destinations;
 pub mod templates;
 
+// 查询某个告警
 pub async fn get(
     org_id: &str,
     stream_name: &str,
@@ -48,9 +49,10 @@ pub async fn get(
     Ok(value)
 }
 
+// 将告警数据插入到db中
 pub async fn set(
     org_id: &str,
-    stream_name: &str,
+    stream_name: &str,  // 表示该告警是通过监测哪个stream产生的
     stream_type: StreamType,
     name: &str,
     alert: Alert,
@@ -74,6 +76,7 @@ pub async fn set(
     Ok(())
 }
 
+// 删除某条告警 
 pub async fn delete(
     org_id: &str,
     stream_name: &str,

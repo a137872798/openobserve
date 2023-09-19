@@ -170,18 +170,25 @@ pub async fn search(
                 new_fields.push(field.clone());
             }
         }
+
+        // 将这些field 合并到旧的schema上
         if !new_fields.is_empty() {
             let new_schema = Schema::new(new_fields);
             inferred_schema = Schema::try_merge(vec![inferred_schema, new_schema])?;
         }
+
         let schema = Arc::new(inferred_schema);
         let sql = sql.clone();
+
+        // 代表只出现过一种schema
         let session = if single_group {
             meta::search::Session {
                 id: session_id.to_string(),
                 storage_type: StorageType::Tmpfs,
             }
         } else {
+
+            // 按照schema版本 移动到不同的目录
             let id = format!("{session_id}-{ver}");
             // move data to group tmpfs
             for file in files.iter() {
@@ -207,6 +214,7 @@ pub async fn search(
         let task =
             tokio::task::spawn(
                 async move {
+                    // 基于该schema进行查询  并且某些字段要按照rule进行类型转换   注意这里声明了此时的文件类型是JSON  因为写入wal时就是json格式
                     exec::sql(&session, schema, &diff_fields, &sql, &files, FileType::JSON).await
                 }
                 .instrument(datafusion_span),
@@ -215,11 +223,13 @@ pub async fn search(
     }
 
     let mut results: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+    // 挨个处理每个任务
     for task in tasks {
         match task.await {
             Ok(ret) => match ret {
                 Ok(ret) => {
                     for (k, v) in ret {
+                        // key相同的数据会合并到一起
                         let group = results.entry(k).or_insert_with(Vec::new);
                         group.extend(v);
                     }
