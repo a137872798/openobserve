@@ -33,22 +33,25 @@ use crate::common::{
 };
 use crate::service::db;
 
+// 表示哪些前缀的数据文件已经完成了加载
 pub static LOADED_FILES: Lazy<RwLock<HashSet<String>>> =
     Lazy::new(|| RwLock::new(HashSet::with_capacity(24)));
 pub static LOADED_ALL_FILES: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
 /**
- * 从远程存储同步数据到本地
+ * 从storage上拉取file_list
  */
 pub async fn cache(prefix: &str, force: bool) -> Result<(), anyhow::Error> {
+
+    // 存储在storage下的file_list 是  zst文件
     let prefix = format!("file_list/{prefix}");
     let mut rw = LOADED_FILES.write().await;
-    // 已经存在数据 不需要更新
+    // 表示已经加载过了
     if !force && rw.contains(&prefix) {
         return Ok(());
     }
 
-    // 从存储仓库拿到指定前缀对应的所有文件 (远程存储)
+    // 这里没有拿到文件数据 只是调用api 拿到文件列表
     let files = storage::list(&prefix).await?;
     let files_num = files.len();
     log::info!("Load file_list [{prefix}] gets {} files", files_num);
@@ -73,7 +76,7 @@ pub async fn cache(prefix: &str, force: bool) -> Result<(), anyhow::Error> {
                 let start = std::time::Instant::now();
                 let mut stats = ProcessStats::default();
 
-                // 挨个拉取文件  每个文件中又记录了一组fileKey
+                // 挨个处理每个file_list文件  每个file_list又记录了一组数据文件
                 for file in chunk {
                     match process_file(&file).await {
                         Ok(ret) => {
@@ -100,9 +103,10 @@ pub async fn cache(prefix: &str, force: bool) -> Result<(), anyhow::Error> {
     let mut stats = ProcessStats::default();
     let mut message_num = 0;
 
-    // 接收上面加载到的fileKey 并由fileList维护
+    // 会接收从file_list文件 解析出来的 一组文件描述符
     while let Some(files) = rx.recv().await {
         if !files.is_empty() {
+            // 将这组数据文件 加入到DB中
             infra_file_list::batch_add(&files).await?;
             tokio::task::yield_now().await;
         }
@@ -126,18 +130,18 @@ pub async fn cache(prefix: &str, force: bool) -> Result<(), anyhow::Error> {
         stats.caching_time
     );
 
-    // create table index  为表创建索引
+    // create table index  为file_list表创建索引
     infra_file_list::create_table_index().await?;
     log::info!("Load file_list create table index done");
 
-    // delete files  这些是之前检测到需要删除的文件
+    // delete files  这些是之前检测到 需要被删除的数据文件  批量删除
     let deleted_files = super::DELETED_FILES
         .iter()
         .map(|v| v.key().to_string())
         .collect::<Vec<String>>();
     infra_file_list::batch_remove(&deleted_files).await?;
 
-    // cache result  代表这个前缀相关的文件都已经存储到fileList中了
+    // cache result  因为这个操作是比较耗时的  为了避免重复调用 添加一个缓存 代表以该前缀的数据文件已经加载过了
     rw.insert(prefix.clone());
     log::info!("Load file_list [{prefix}] done deleting done");
 
@@ -172,10 +176,10 @@ pub async fn cache_stats() -> Result<(), anyhow::Error> {
 }
 
 /**
- * 处理待拉取的文件
+ * 处理某个file_list文件
  */
 async fn process_file(file: &str) -> Result<Vec<FileKey>, anyhow::Error> {
-    // download file list from storage  触发从外部存储拉取文件的逻辑
+    // download file list from storage    下载file_list文件
     let data = match storage::get(file).await {
         Ok(data) => data,
         Err(_) => {
@@ -183,21 +187,22 @@ async fn process_file(file: &str) -> Result<Vec<FileKey>, anyhow::Error> {
         }
     };
 
-    // uncompress file
+    // uncompress file     file_list文件是 zst格式的  进行解码
     let uncompress = zstd::decode_all(data.reader())?;
     let uncompress_reader = BufReader::new(uncompress.reader());
     // parse file list
     let mut records = Vec::with_capacity(1024);
 
-    // 按行读取数据
+    // 每行都对应一个数据文件  (一个文件描述符)
     for line in uncompress_reader.lines() {
         let line = line?;
         if line.is_empty() {
             continue;
         }
-        // 每行标识了一个文件
+
+        // 解析文件描述符
         let item: FileKey = json::from_slice(line.as_bytes())?;
-        // check backlist
+        // check backlist  跳过属于黑名单的文件
         if !super::BLOCKED_ORGS.is_empty() {
             let columns = item.key.split('/').collect::<Vec<&str>>();
             let org_id = columns.get(1).unwrap_or(&"");
@@ -206,7 +211,7 @@ async fn process_file(file: &str) -> Result<Vec<FileKey>, anyhow::Error> {
                 continue;
             }
         }
-        // check deleted files  已被删除的加入另一个map
+        // check deleted files  检查该数据文件是否已经被标记成删除
         if item.deleted {
             super::DELETED_FILES.insert(item.key, item.meta.to_owned());
             continue;
@@ -266,8 +271,9 @@ pub async fn cache_all() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 缓存最近一个小时的数据
 pub async fn cache_latest_hour() -> Result<(), anyhow::Error> {
-    // for hourly
+    // for hourly  得到当前整点时间  这个是前缀时间 所以可能会找到多个zst文件
     let prefix = Utc::now().format("%Y/%m/%d/%H/").to_string();
     cache(&prefix, true).await?;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

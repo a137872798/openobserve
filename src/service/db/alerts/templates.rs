@@ -97,6 +97,7 @@ pub async fn list(org_id: &str) -> Result<Vec<DestinationTemplate>, anyhow::Erro
     }
 }
 
+// 监听告警模板
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/templates/";
     let db = &infra_db::CLUSTER_COORDINATOR;

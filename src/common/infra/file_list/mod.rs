@@ -53,7 +53,7 @@ pub trait FileList: Sync + Send + 'static {
     async fn add(&self, file: &str, meta: &FileMeta) -> Result<()>;
     // 移除文件
     async fn remove(&self, file: &str) -> Result<()>;
-    // 批量添加文件
+    // 批量添加文件    fileList的add 对应的是一个数据文件 (不是一个文件目录 如果是文件目录 那么展开来里面还有一组数据文件)
     async fn batch_add(&self, files: &[FileKey]) -> Result<()>;
     // 批量移除文件
     async fn batch_remove(&self, files: &[String]) -> Result<()>;

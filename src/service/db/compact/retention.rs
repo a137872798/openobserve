@@ -31,6 +31,7 @@ fn mk_key(
     date_range: Option<(&str, &str)>,
 ) -> String {
     match date_range {
+        // 没有指定范围时 就认为整个stream被标记成删除
         None => format!("{org_id}/{stream_type}/{stream_name}/all"),
         Some((start, end)) => format!("{org_id}/{stream_type}/{stream_name}/{start},{end}"),
     }
@@ -39,7 +40,7 @@ fn mk_key(
 // delete data from stream
 // if date_range is empty, delete all data
 // date_range is a tuple of (start, end), eg: (2023-01-02, 2023-01-03)
-// 将需要删除的数据文件范围记录到 元数据中
+// 标记该范围内的数据 已经被认为是清理了
 pub async fn delete_stream(
     org_id: &str,
     stream_name: &str,
@@ -145,7 +146,7 @@ pub async fn list() -> Result<Vec<String>, anyhow::Error> {
 }
 
 /**
-* 监听压缩事件   也是同步缓存
+* 监听stream数据清理
 */
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/compact/delete/";

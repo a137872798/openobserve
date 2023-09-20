@@ -24,8 +24,11 @@ fn mk_keys(org_id: &str, key: &str) -> (String, String) {
     (cache_key, db_key)
 }
 
+// 查询kv数据
 pub async fn get(org_id: &str, key: &str) -> Result<bytes::Bytes, anyhow::Error> {
     let (cache_key, db_key) = mk_keys(org_id, key);
+
+    // 先尝试从缓存获取 没有则从db获取
     if let Some(it) = KVS.get(&cache_key) {
         return Ok(it.value().clone());
     }
@@ -35,6 +38,7 @@ pub async fn get(org_id: &str, key: &str) -> Result<bytes::Bytes, anyhow::Error>
     Ok(val)
 }
 
+// 将kv存储到db和缓存 
 pub async fn set(org_id: &str, key: &str, val: bytes::Bytes) -> Result<(), anyhow::Error> {
     let (cache_key, db_key) = mk_keys(org_id, key);
     let db = &infra_db::DEFAULT;

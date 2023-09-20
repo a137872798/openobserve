@@ -38,7 +38,7 @@ use crate::{
         (status = 500, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/_bulk")]
+#[post("/{org_id}/_bulk")]  // 大块插入数据
 pub async fn bulk(
     org_id: web::Path<String>,
     body: web::Bytes,

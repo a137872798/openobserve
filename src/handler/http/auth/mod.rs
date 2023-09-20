@@ -137,6 +137,7 @@ pub async fn validate_credentials(
     }
 }
 
+// 验证用户
 pub async fn validate_user(user_id: &str, user_password: &str) -> Result<bool, Error> {
     let db_user = db::user::get_db_user(user_id).await;
     match db_user {

@@ -23,7 +23,7 @@ use crate::common::infra::file_list::parse_file_key_columns;
 pub struct FileKey {
     pub key: String,
     pub meta: FileMeta,
-    pub deleted: bool,
+    pub deleted: bool,  // 该数据文件是否已经被删除
 }
 
 impl FileKey {

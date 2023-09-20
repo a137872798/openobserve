@@ -36,7 +36,7 @@ pub(crate) mod syslog_server;
 mod telemetry;
 
 /**
-* 对各种任务进行初始化
+* 负责各个后台任务的引导工作
 */
 pub async fn init() -> Result<(), anyhow::Error> {
     // init db   初始化元数据数据库
@@ -47,7 +47,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
     )
     .expect("Email regex is valid");
 
-    // init root user 检查root用户是否创建
+    // init root user  确保至少有一个root角色的用户
     if !db::user::root_user_exists().await {
         if CONFIG.auth.root_user_email.is_empty()
             || !email_regex.is_match(&CONFIG.auth.root_user_email)
@@ -70,12 +70,12 @@ pub async fn init() -> Result<(), anyhow::Error> {
         .await;
     }
 
-    // cache users  监听数据库变化 并同步到本地缓存
+    // cache users  监控user表的变化 并同步缓存
     tokio::task::spawn(async move { db::user::watch().await });
-    // 将所有用户加载到缓存
+    // 只能监控增量数据 所以现在要先加载原始数据
     db::user::cache().await.expect("user cache failed");
 
-    //set instance id   从DB中查询实例id  没有的话产生一个并插入
+    //set instance id   从DB中查询实例id  没有的话产生一个并插入     整个集群看来是共享一个实例id的 第一个节点设置后 后面的节点就能读取到了 也就不需要再产生和设置了
     let instance_id = match db::get_instance().await {
         Ok(Some(instance)) => instance,
         Ok(None) | Err(_) => {
@@ -86,10 +86,10 @@ pub async fn init() -> Result<(), anyhow::Error> {
     };
     INSTANCE_ID.insert("instance_id".to_owned(), instance_id);
 
-    // check version  将GIT_VERSION插入到db中
+    // check version  设置 kv存储的版本
     db::version::set().await.expect("db version set failed");
 
-    // Router doesn't need to initialize job   代表本节点只是起到路由作用
+    // Router doesn't need to initialize job   路由节点 不需要开启后台任务
     if cluster::is_router(&cluster::LOCAL_NODE_ROLE) {
         return Ok(());
     }
@@ -99,24 +99,22 @@ pub async fn init() -> Result<(), anyhow::Error> {
         tokio::task::spawn(async move { telemetry::run().await });
     }
 
-    // initialize metadata watcher  开始为各种元数据设置监听器  主要就是同步缓存
-    // 监听schema
+    // initialize metadata watcher  开始为各种元数据设置监听器
     tokio::task::spawn(async move { db::schema::watch().await });
-    // 监听function
     tokio::task::spawn(async move { db::functions::watch().await });
-    // 监听数据压缩
+    // 监听stream数据清理
     tokio::task::spawn(async move { db::compact::retention::watch().await });
     // TODO
     tokio::task::spawn(async move { db::metrics::watch_prom_cluster_leader().await });
-    // TODO
     tokio::task::spawn(async move { db::alerts::templates::watch().await });
     tokio::task::spawn(async move { db::alerts::destinations::watch().await });
+    // 监听告警
     tokio::task::spawn(async move { db::alerts::watch().await });
+    // 监听触发器
     tokio::task::spawn(async move { db::triggers::watch().await });
     tokio::task::yield_now().await; // yield let other tasks run
 
-    // 现在从DB中加载数据并填充到缓存中
-    // cache core metadata
+    // cache core metadata   现在从DB中加载数据并填充到缓存中
     db::schema::cache().await.expect("stream cache failed");
     db::functions::cache()
         .await
@@ -139,6 +137,8 @@ pub async fn init() -> Result<(), anyhow::Error> {
     db::triggers::cache()
         .await
         .expect("alerts triggers cache failed");
+
+    // TODO syslog先忽略
     db::syslog::cache().await.expect("syslog cache failed");
     db::syslog::cache_syslog_settings()
         .await
@@ -147,7 +147,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
     // cache file list   上面创建的是元数据
     infra_file_list::create_table().await?;
 
-    // 并没有使用外部存储 所以需要并且是需要查询数据的节点
+    // 从storage拉取文件清单   在解析出数据文件后 同步到本地的DB
     if !CONFIG.common.meta_store_external
         && (cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
             || cluster::is_compactor(&cluster::LOCAL_NODE_ROLE))
@@ -162,22 +162,22 @@ pub async fn init() -> Result<(), anyhow::Error> {
             .expect("file list remote cache stats failed");
     }
 
-    // 创建表索引
+    // 为file_list表创建索引    如果不需要从storage同步 那么本地DB应该已经有数据了  (storage应该是全局的 本地DB是只有写入本节点的)
     infra_file_list::create_table_index().await?;
 
-    // check wal directory   如果是抽取节点 也可以理解为写入数据的节点  需要创建wal目录
+    // check wal directory  本节点支持写入数据
     if cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
-        // create wal dir
+        // create wal dir  创建wal目录
         std::fs::create_dir_all(&CONFIG.common.data_wal_dir)?;
-        // clean empty sub dirs
+        // clean empty sub dirs  清理下级目录
         clean_empty_dirs(&CONFIG.common.data_wal_dir)?;
     }
 
     // 开启一些后台任务
-    tokio::task::spawn(async move { files::run().await });
-    tokio::task::spawn(async move { file_list::run().await });
+    tokio::task::spawn(async move { files::run().await });   // 定期将wal磁盘文件 和 wal内存文件同步到 storage 并更新file_list 以及通知到集群中其他节点
+    tokio::task::spawn(async move { file_list::run().await });  // 将记录file_list变化的wal文件推送到 storage 并定期再加载storage的file_list文件 同步到DB 这样集群中所有节点会最终一致
     tokio::task::spawn(async move { stats::run().await });
-    tokio::task::spawn(async move { compact::run().await });
+    tokio::task::spawn(async move { compact::run().await });  // 定期压缩数据文件
     tokio::task::spawn(async move { metrics::run().await });
     tokio::task::spawn(async move { prom::run().await });
     tokio::task::spawn(async move { alert_manager::run().await });
@@ -185,7 +185,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
     // Shouldn't serve request until initialization finishes
     log::info!("Job initialization complete");
 
-    // Syslog server start
+    // Syslog server start TODO
     tokio::task::spawn(async move { db::syslog::watch().await });
     tokio::task::spawn(async move { db::syslog::watch_syslog_settings().await });
 

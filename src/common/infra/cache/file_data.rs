@@ -22,6 +22,7 @@ use crate::common::infra::config::CONFIG;
 use crate::common::infra::metrics;
 use crate::common::infra::storage;
 
+// 数据文件 
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
 
 // 将文件数据缓存在内存中
@@ -162,9 +163,9 @@ pub fn len() -> usize {
     files.data.len()
 }
 
-// 根据filekey的信息 下载文件
 #[inline]
 pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
+    // 数据文件也可以存储在storage
     let data = storage::get(file).await?;
     // 将数据存储到内存中
     if let Err(e) = set(file, data.clone()) {

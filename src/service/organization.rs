@@ -20,8 +20,10 @@ use crate::common::meta::user::UserOrg;
 use crate::common::utils::auth::is_root_user;
 use crate::service::db;
 
+// 获取某个组织的详情
 #[tracing::instrument]
 pub async fn get_summary(org_id: &str) -> OrgSummary {
+    // 查询该组织下所有stream
     let streams = get_streams(org_id, None, false).await;
     let functions = db::functions::list(org_id).await.unwrap();
     let alerts = db::alerts::list(org_id, None, None).await.unwrap();
@@ -32,6 +34,7 @@ pub async fn get_summary(org_id: &str) -> OrgSummary {
     }
 }
 
+// 获取某个组织下某用户的密码
 #[tracing::instrument]
 pub async fn get_passcode(org_id: Option<&str>, user_id: &str) -> IngestionPasscode {
     let user = db::user::get(org_id, user_id).await.unwrap().unwrap();
@@ -41,15 +44,20 @@ pub async fn get_passcode(org_id: Option<&str>, user_id: &str) -> IngestionPassc
     }
 }
 
+// 更新用户密码
 #[tracing::instrument]
 pub async fn update_passcode(org_id: Option<&str>, user_id: &str) -> IngestionPasscode {
     let mut local_org_id = "dummy";
+
+    // 查询用户信息
     let mut db_user = db::user::get_db_user(user_id).await.unwrap();
 
     if org_id.is_some() {
         local_org_id = org_id.unwrap();
     }
     let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+
+    // 获取该用户所属的全部组织
     let mut orgs = db_user.clone().organizations;
     let new_orgs = if !is_root_user(user_id) {
         let mut existing_org = orgs.clone();
@@ -57,6 +65,7 @@ pub async fn update_passcode(org_id: Option<&str>, user_id: &str) -> IngestionPa
         existing_org.retain(|org| org.name.eq(&local_org_id));
         orgs.retain(|org| !org.name.eq(&local_org_id));
 
+        // 更新了token的值
         orgs.push(UserOrg {
             name: local_org_id.to_string(),
             token: token.clone(),
@@ -64,6 +73,7 @@ pub async fn update_passcode(org_id: Option<&str>, user_id: &str) -> IngestionPa
         });
         orgs
     } else {
+        // 更新token 
         let mut existing_org = orgs.first().unwrap().clone();
         existing_org.token = token.clone();
         vec![existing_org]

@@ -34,14 +34,14 @@ use crate::service::{
 };
 
 /**
-* 有关磁盘要执行的定期任务
-*/
+ * 有关磁盘要执行的定期任务
+ */
 pub async fn run() -> Result<(), anyhow::Error> {
     let mut interval = time::interval(time::Duration::from_secs(CONFIG.limit.file_push_interval));
     interval.tick().await; // trigger the first run
     loop {
         interval.tick().await;
-        // 定期将文件移动到外部存储
+        // 定期将磁盘数据文件推送到storage
         if let Err(e) = move_files_to_storage().await {
             log::error!("Error moving disk files to remote: {}", e);
         }
@@ -49,25 +49,27 @@ pub async fn run() -> Result<(), anyhow::Error> {
 }
 
 /*
- * upload compressed files to storage & delete moved files from local 将数据从本地上传到外部存储
+ * upload compressed files to storage & delete moved files from local
  */
 async fn move_files_to_storage() -> Result<(), anyhow::Error> {
-    // 找到wal日志存储目录
+    // 找到数据文件目录
     let wal_dir = Path::new(&CONFIG.common.data_wal_dir)
         .canonicalize()
         .unwrap();
 
     let pattern = format!("{}files/", &CONFIG.common.data_wal_dir);
-    // 得到所有扫描到的目录
+    // 扫描目录 得到所有文件
     let files = scan_files(&pattern);
 
     // use multiple threads to upload files
     let mut tasks = Vec::new();
     // 这是进行数据搬运的线程
     let semaphore = std::sync::Arc::new(Semaphore::new(CONFIG.limit.file_move_thread_num));
+
     for file in files {
         let local_file = file.to_owned();
         let local_path = Path::new(&file).canonicalize().unwrap();
+        // 拼接得到完整的数据文件路径
         let file_path = local_path
             .strip_prefix(&wal_dir)
             .unwrap()
@@ -91,14 +93,14 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             file_name = file_name.replace('_', "/");
         }
 
-        // check the file is using for write  跳过还在写入的文件
+        // check the file is using for write  定期搬运 但是要跳过还在写入的文件
         if wal::check_in_use(&org_id, &stream_name, stream_type, &file_name) {
             // println!("file is using for write, skip, {}", file_name);
             continue;
         }
         log::info!("[JOB] convert disk file: {}", file);
 
-        // check if we are allowed to ingest or just delete the file  这是一个特殊的缓存 表示可以删除文件
+        // check if we are allowed to ingest or just delete the file  这是一个特殊的缓存 如果range为None 代表整个stream已经被删除了
         if db::compact::retention::is_deleting_stream(&org_id, &stream_name, stream_type, None) {
             log::info!(
                 "[JOB] the stream [{}/{}/{}] is deleting, just delete file: {}",
@@ -131,7 +133,9 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
                 return Ok(());
             }
 
+            // 只有当文件上传成功后  才会将本文件暴露给 file_list  也就是想要读取完整的数据集 就是 wal文件+file_list
             let (key, meta, _stream_type) = ret.unwrap();
+            // 将文件名保存到DB  同时还会通知其他节点同步file_list 以及将parquet文件从storage拉取到本地 以加速查找
             let ret = db::file_list::local::set(&key, meta, false).await;
             if let Err(e) = ret {
                 log::error!(
@@ -143,6 +147,7 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
                 return Ok(());
             }
 
+            // 既然该文件已经存储在远端了 并且在DB下留下痕迹  也已经加载到内存中了  就可以从wal目录下删除了
             let ret = fs::remove_file(&local_file);
             if let Err(e) = ret {
                 log::error!(
@@ -177,8 +182,8 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/*
-将文件传输到 object_store
+/**
+ * 上传文件到storage
  */
 async fn upload_file(
     org_id: &str,
@@ -251,7 +256,8 @@ async fn upload_file(
     // 生成schema对象
     let arrow_schema = Arc::new(inferred_schema);
 
-    // 记录已经写入的数据
+    // 原本在本地是json格式数据文件  在存入storage时 做了优化 变成了parquet文件
+
     let mut meta_batch = vec![];
     let mut buf_parquet = Vec::new();
 
@@ -309,6 +315,7 @@ async fn upload_file(
     // 填充文件元数据
     populate_file_meta(arrow_schema.clone(), vec![meta_batch], &mut file_meta).await?;
 
+    // 检查schema是否发生变化  并在合并后写入DB
     schema_evolution(
         org_id,
         stream_name,
@@ -316,7 +323,7 @@ async fn upload_file(
         arrow_schema,
         file_meta.min_ts,
     )
-    .await;
+        .await;
 
     let new_file_name =
         super::generate_storage_file_name(org_id, stream_type, stream_name, file_name);

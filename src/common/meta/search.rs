@@ -96,7 +96,7 @@ pub struct Query {
     #[serde(default)]
     pub query_context: Option<String>,
     // 这里是2个函数吗 ?
-    #[serde(default)]
+    #[serde(default)]  // 表示sql中出现了 transform函数
     pub uses_zo_fn: bool,
     #[serde(default)]
     pub query_fn: Option<String>,

@@ -22,6 +22,7 @@ use crate::common::{
     utils::json,
 };
 
+// 为file_list追加一个新数据文件
 pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow::Error> {
     let (_stream_key, date_key, _file_name) = file_list::parse_file_key_columns(key)?;
     let file_data = FileKey::new(key, meta, deleted);
@@ -29,6 +30,7 @@ pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow:
     // write into file_list storage
     // retry 5 times
     for _ in 0..5 {
+        // download为true  代表如果是查询节点 就将该文件数据缓存到本地  并且文件名还要入库
         if let Err(e) = super::progress(key, meta, deleted, true).await {
             log::error!("[FILE_LIST] Error saving file to storage, retrying: {}", e);
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -36,13 +38,19 @@ pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow:
             break;
         }
     }
+
+    // 如果没有使用到外部存储 那么现在就可以停止了
     if CONFIG.common.meta_store_external {
         return Ok(());
     }
 
+    // 代表需要生成一个file_list 并同步到远端  在启动时可以看到 如果meta_store_external为false 会先从外部存储同步file_list
+
     // write into local cache for s3
     let mut write_buf = json::to_vec(&file_data)?;
     write_buf.push(b'\n');
+
+    // 准备将这些数据文件信息写入到一个文件中
     let file = wal::get_or_create(
         0,
         StreamParams {
@@ -52,11 +60,11 @@ pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow:
         },
         None,
         &date_key,
-        false,
+        false,  // 使用FS
     );
     file.write(write_buf.as_ref());
 
-    // notifiy other nodes
+    // notifiy other nodes     因为每个节点如果只是将file_list更新到本地  那么其他节点将无法观测到新的数据文件 所以还需要通知其他节点
     tokio::task::spawn(async move { super::broadcast::send(&[file_data], None).await });
     tokio::task::yield_now().await;
 

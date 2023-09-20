@@ -40,7 +40,7 @@ pub const TRANSFORM_FAILED: &str = "document_failed_transform";
 pub const TS_PARSE_FAILED: &str = "timestamp_parsing_failed";
 pub const SCHEMA_CONFORMANCE_FAILED: &str = "schema_conformance_failed";
 
-// 从web层接收数据 并插入数据  应该会涉及到路由逻辑   bulk插入甚至不同数据可以来自不同的stream
+// 从web层接收数据 并插入数据 bulk插入甚至不同数据可以来自不同的stream
 pub async fn ingest(
     org_id: &str,
     body: web::Bytes,  // 本次待处理数据

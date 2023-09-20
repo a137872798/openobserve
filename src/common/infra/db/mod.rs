@@ -58,11 +58,11 @@ pub fn default() -> Box<dyn Db> {
 pub async fn create_table() -> Result<()> {
     // check db dir   初始化存储数据文件的目录 默认 ./data/openobserve/db/
     std::fs::create_dir_all(&CONFIG.common.data_db_dir)?;
-    // create for cluster_coordinator   单机模式 在sqlite上创建各种相关表
+    // create for cluster_coordinator   第一个table作为集群协调者
     if CONFIG.common.local_mode {
         sqlite::create_table().await?;
     }
-    // create for meta store
+    // create for meta store     第二个table作为元数据仓库
     match CONFIG.common.meta_store.as_str().into() {
         MetaStore::Sled => sled::create_table().await,
         MetaStore::Sqlite => sqlite::create_table().await,
@@ -73,7 +73,6 @@ pub async fn create_table() -> Result<()> {
 }
 
 pub fn cluster_coordinator() -> Box<dyn Db> {
-
     // 单机模式的话 可以不借助etcd来存储
     if CONFIG.common.local_mode {
         match CONFIG.common.meta_store.as_str().into() {

@@ -26,6 +26,7 @@ pub mod broadcast;
 pub mod local;
 pub mod remote;
 
+// 存储所有被标记成删除的数据文件
 pub static DELETED_FILES: Lazy<RwHashMap<String, FileMeta>> =
     Lazy::new(|| DashMap::with_capacity_and_hasher(64, Default::default()));
 
@@ -33,12 +34,12 @@ pub static BLOCKED_ORGS: Lazy<Vec<&str>> =
     Lazy::new(|| CONFIG.compact.blocked_orgs.split(',').collect());
 
 /**
-更新本地file_list缓存
+* 处理每个数据文件
 */
 pub async fn progress(
     key: &str,
     data: FileMeta,
-    delete: bool,    // 该文件是被删除了 还是新增的
+    delete: bool,    // 表示该数据文件已经被删除 或者是新增的
     download: bool,  // 代表是否要下载文件数据
 ) -> Result<(), anyhow::Error> {
 
@@ -52,7 +53,7 @@ pub async fn progress(
             );
         }
     } else {
-        // 将数据加入到db中
+        // 新增数据文件
         if let Err(e) = file_list::add(key, &data).await {
             log::error!(
                 "service:db:file_list: add {}, set_file_to_cache error: {}",
@@ -61,7 +62,7 @@ pub async fn progress(
             );
         }
 
-        // 只是文件元数据
+        // 代表支持将最新的数据文件存入内存
         if download
             && CONFIG.memory_cache.cache_latest_files
             && cluster::is_querier(&cluster::LOCAL_NODE_ROLE)

@@ -49,6 +49,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
 /*
  * upload compressed files to storage & delete moved files from local
+ * 除了实际写入到磁盘的wal文件  模拟的wal内存文件也需要同步到storage    这里的操作和disk.rs一样
  */
 async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     // need to clone here, to avoid thread boundry issues across awaits

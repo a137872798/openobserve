@@ -43,7 +43,7 @@ pub enum StreamType {
     Traces,
     #[serde(rename = "enrichment_tables")]
     EnrichmentTables,
-    #[serde(rename = "file_list")]
+    #[serde(rename = "file_list")]  // 代表内部是一条条数据文件描述
     Filelist,
 }
 

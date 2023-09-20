@@ -24,9 +24,10 @@ use crate::common::infra::config::CONFIG;
 #[derive(Default)]
 pub struct LogsServer;
 
-// grpc 暴露的日志服务
 #[async_trait]
 impl LogsService for LogsServer {
+
+    // 就是把某种格式的日志 写入到logs模块
     async fn export(
         &self,
         request: tonic::Request<ExportLogsServiceRequest>,
@@ -36,6 +37,8 @@ impl LogsService for LogsServer {
             "Please specify organization id with header key '{}' ",
             &CONFIG.grpc.org_header_key
         );
+
+        // 该请求需要org_id
         if !metadata.contains_key(&CONFIG.grpc.org_header_key) {
             return Err(Status::invalid_argument(msg));
         }
@@ -46,6 +49,7 @@ impl LogsService for LogsServer {
             return Err(Status::invalid_argument(msg));
         }
 
+        // handle_grpc_request 就是将数据写入到wal文件
         let resp = crate::service::logs::json_no_fn::handle_grpc_request(
             org_id.unwrap().to_str().unwrap(),
             0,

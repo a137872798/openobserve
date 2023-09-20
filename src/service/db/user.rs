@@ -94,13 +94,15 @@ pub async fn delete(name: &str) -> Result<(), anyhow::Error> {
 }
 
 /**
- * 监控用户的变化
+ * 监控用户表的变化 并同步缓存
  */
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/user/";
 
-    // 返回对应的DB
+    // db分为2种 一种是集群协调者  一种是 metaStore  单机模式下 CLUSTER_COORDINATOR 就是sqlite  集群模式则是etcd
     let db = &infra_db::CLUSTER_COORDINATOR;
+
+    // 监听用户变化 并返回一个事件流
     let mut events = db.watch(key).await?;
     let events = Arc::get_mut(&mut events).unwrap();
     log::info!("Start watching user");
@@ -113,11 +115,13 @@ pub async fn watch() -> Result<(), anyhow::Error> {
             }
         };
 
-        // 根据监听到的事件同步本地的缓存
+        // 处理收到的事件
         match ev {
             infra_db::Event::Put(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value: DBUser = json::from_slice(&ev.value.unwrap()).unwrap();
+
+                // 做了一层映射
                 let users = item_value.get_all_users();
                 for user in users {
                     if user.role.eq(&UserRole::Root) {
@@ -141,6 +145,7 @@ pub async fn watch() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 将用户数据加载到cache
 pub async fn cache() -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/user/";

@@ -169,7 +169,7 @@ pub enum UserRole {
     #[serde(rename = "member")]
     #[default]
     Member,
-    #[serde(rename = "root")]
+    #[serde(rename = "root")]  // 代表root用户
     Root,
 }
 

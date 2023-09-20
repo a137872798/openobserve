@@ -67,7 +67,9 @@ impl SqliteDb {
                     break;
                 }
                 match rx.recv().await {
+                    // v 代表一次变化事件
                     Some(v) => {
+                        // 在尝试通知前 需要先查看WATCHERS 有没有监听这个事件
                         for (prefix, tx) in WATCHERS.read().await.iter() {
                             match v.clone() {
                                 super::Event::Put(e) => {
