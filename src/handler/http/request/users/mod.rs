@@ -38,7 +38,7 @@ use crate::service::users;
         (status = 200, description="Success", content_type = "application/json", body = UserList),
     )
 )]
-#[get("/{org_id}/users")]
+#[get("/{org_id}/users")]   // 查看某个org下所有用户
 pub async fn list(org_id: web::Path<String>) -> Result<HttpResponse, Error> {
     let org_id = org_id.into_inner();
     users::list_users(&org_id).await
@@ -60,7 +60,7 @@ pub async fn list(org_id: web::Path<String>) -> Result<HttpResponse, Error> {
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/users")]
+#[post("/{org_id}/users")]  // 添加用户
 pub async fn save(
     org_id: web::Path<String>,
     user: web::Json<UserRequest>,
@@ -87,7 +87,7 @@ pub async fn save(
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[put("/{org_id}/users/{email_id}")]
+#[put("/{org_id}/users/{email_id}")]  // 根据email_id 确定一个用户
 pub async fn update(
     params: web::Path<(String, String)>,
     user: web::Json<UpdateUser>,
@@ -103,6 +103,7 @@ pub async fn update(
             )),
         );
     }
+    // 获取当前登录用户凭证 判断是否为本用户登录
     let initiator_id = credentials.user_id();
     let self_update = credentials.user_id().eq(&email_id);
     users::update_user(&org_id, &email_id, self_update, initiator_id, user).await
@@ -125,7 +126,7 @@ pub async fn update(
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/users/{email_id}")]
+#[post("/{org_id}/users/{email_id}")]   // 将用户加入到某个组织
 pub async fn add_user_to_org(
     params: web::Path<(String, String)>,
     role: web::Json<UserOrgRole>,
@@ -154,7 +155,7 @@ pub async fn add_user_to_org(
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[delete("/{org_id}/users/{email_id}")]
+#[delete("/{org_id}/users/{email_id}")]  // 将某个用户从某个org下移除
 pub async fn delete(path: web::Path<(String, String)>) -> Result<HttpResponse, Error> {
     let (org_id, email_id) = path.into_inner();
     users::remove_user_from_org(&org_id, &email_id).await
@@ -170,9 +171,11 @@ pub async fn delete(path: web::Path<(String, String)>) -> Result<HttpResponse, E
         (status = 200, description="Success", content_type = "application/json", body = SignInResponse),
     )
 )]
-#[post("/login")]
+#[post("/login")]  // 用户登录
 pub async fn authentication(auth: web::Json<SignInUser>) -> Result<HttpResponse, Error> {
     let mut resp = SignInResponse::default();
+
+    // 认证用户
     match crate::handler::http::auth::validate_user(&auth.name, &auth.password).await {
         Ok(v) => {
             if v {

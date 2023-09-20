@@ -22,6 +22,7 @@ use crate::{
 use http_auth_basic::Credentials;
 use tonic::{Request, Status};
 
+// 在发起grpc调用前 需要确保具备调用的权限
 pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
     let metadata = req.metadata();
     if !metadata.contains_key(&CONFIG.grpc.org_header_key)
@@ -30,6 +31,7 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
         return Err(Status::unauthenticated("No valid auth token"));
     }
 
+    // 获取调用请求需要的token
     let token = req
         .metadata()
         .get("authorization")
@@ -37,9 +39,12 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
         .to_str()
         .unwrap()
         .to_string();
+
+    // a节点想要调用b节点 就需要提前知道b的token
     if token.eq(get_internal_grpc_token().as_str()) {
         Ok(req)
     } else {
+        // token不匹配 只能通过别的方式
         let org_id = metadata.get(&CONFIG.grpc.org_header_key);
         if org_id.is_none() {
             return Err(Status::invalid_argument(format!(
@@ -48,6 +53,7 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
             )));
         }
 
+        // 解析token 得到用户信息
         let credentials = match Credentials::from_header(token) {
             Ok(c) => c,
             Err(err) => {
@@ -59,6 +65,7 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
         let user_id = credentials.user_id;
         let user = if is_root_user(&user_id) {
             ROOT_USER.get("root").unwrap()
+            // 通过 org_id/user_id 找到用户
         } else if let Some(user) = USERS.get(&format!(
             "{}/{}",
             org_id.unwrap().to_str().unwrap(),
@@ -69,9 +76,11 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
             return Err(Status::unauthenticated("No valid auth token"));
         };
 
+        // 这个匹配也可以
         if user.token.eq(&credentials.password) {
             return Ok(req);
         }
+        // 要求用户匹配
         let in_pass = get_hash(&credentials.password, &user.salt);
         if user_id.eq(&user.email)
             && (credentials.password.eq(&user.password) || in_pass.eq(&user.password))

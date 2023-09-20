@@ -116,6 +116,7 @@ pub async fn list(
     Ok(alerts_list)
 }
 
+// 监听告警变化
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/alerts/";
     let db = &infra_db::CLUSTER_COORDINATOR;

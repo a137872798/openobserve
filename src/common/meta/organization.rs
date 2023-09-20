@@ -27,6 +27,7 @@ pub struct Organization {
     pub label: String,
 }
 
+// 描述组织的一个用户
 #[derive(Serialize, Clone, ToSchema)]
 pub struct OrgUser {
     pub first_name: String,
@@ -34,6 +35,7 @@ pub struct OrgUser {
     pub email: String,
 }
 
+// 描述组织详情
 #[derive(Serialize, ToSchema)]
 pub struct OrgDetails {
     pub id: i64,

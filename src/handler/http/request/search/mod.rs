@@ -96,7 +96,7 @@ use crate::service::usage::report_request_usage_stats;
         (status = 500, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/_search")]
+#[post("/{org_id}/_search")]   // 针对某个组织发起查询请求
 pub async fn search(
     org_id: web::Path<String>,
     in_req: HttpRequest,
@@ -104,17 +104,21 @@ pub async fn search(
 ) -> Result<HttpResponse, Error> {
     let start = std::time::Instant::now();
     let org_id = org_id.into_inner();
+
+    // 从path上获取stream类型
     let query = web::Query::<AHashMap<String, String>>::from_query(in_req.query_string()).unwrap();
     let stream_type = match get_stream_type_from_request(&query) {
         Ok(v) => v.unwrap_or(StreamType::Logs),
         Err(e) => return Ok(bad_request(e)),
     };
 
-    // handle encoding for query and aggs
+    // handle encoding for query and aggs   将body转换成req
     let mut req: meta::search::Request = match json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => return Ok(bad_request(e)),
     };
+
+    // 可能sql会被64编码 就需要进行解码
     if let Err(e) = req.decode() {
         return Ok(bad_request(e));
     }
@@ -128,14 +132,16 @@ pub async fn search(
         }
     }
 
-    // get a local search queue lock
+    // get a local search queue lock  看来本地所有查询是串行执行的  然后每个查询都会一次榨干机器的性能 估计CK也是一样
     let locker = SearchService::QUEUE_LOCKER.clone();
     let _locker = locker.lock().await;
     let took_wait = start.elapsed().as_millis() as usize;
 
-    // do search
+    // do search   调用grpc请求
     match SearchService::search(&org_id, stream_type, &req).await {
         Ok(mut res) => {
+
+            // 下面是处理结果
             let time = start.elapsed().as_secs_f64();
             metrics::HTTP_RESPONSE_TIME
                 .with_label_values(&[
@@ -252,7 +258,7 @@ pub async fn search(
         (status = 500, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/{stream_name}/_around")]
+#[get("/{org_id}/{stream_name}/_around")]  // 查询某个stream 某个时间点周围的数据
 pub async fn around(
     path: web::Path<(String, String)>,
     in_req: HttpRequest,
@@ -266,6 +272,7 @@ pub async fn around(
         Err(e) => return Ok(bad_request(e)),
     };
 
+    // 获取around查询关注的key
     let around_key = match query.get("key") {
         Some(v) => v.parse::<i64>().unwrap_or(0),
         None => return Ok(bad_request("around key is empty")),
@@ -273,6 +280,8 @@ pub async fn around(
     let query_fn = query.get("query_fn").and_then(|v| base64::decode(v).ok());
 
     let default_sql = format!("SELECT * FROM \"{}\" ", stream_name);
+
+    // sql一定要包含transform  否则就是 default_sql
     let around_sql = match query.get("sql") {
         None => default_sql,
         Some(v) => match base64::decode(v) {
@@ -304,7 +313,7 @@ pub async fn around(
         None
     };
 
-    // search forward
+    // search forward  构建查询条件
     let req = meta::search::Request {
         query: meta::search::Query {
             sql: around_sql.clone(),
@@ -410,6 +419,8 @@ pub async fn around(
         }
     };
 
+    // 此时已经得到前后数据了 将他们做整合
+
     // merge
     let mut resp = meta::search::Response::default();
     let hits_num = resp_backward.hits.len();
@@ -497,7 +508,7 @@ pub async fn around(
         (status = 500, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/{stream_name}/_values")]
+#[get("/{org_id}/{stream_name}/_values")]   // 查询某个stream的数据
 pub async fn values(
     path: web::Path<(String, String)>,
     in_req: HttpRequest,
@@ -511,6 +522,7 @@ pub async fn values(
         Err(e) => return Ok(bad_request(e)),
     };
 
+    // 这些field就是聚合字段  
     let fields = match query.get("fields") {
         Some(v) => v.split(',').map(|s| s.to_string()).collect::<Vec<_>>(),
         None => return Ok(bad_request("fields is empty")),
@@ -532,6 +544,7 @@ pub async fn values(
         },
     };
 
+    // 都是从uri中解析参数
     let size = query
         .get("size")
         .map_or(10, |v| v.parse::<usize>().unwrap_or(0));
@@ -552,7 +565,7 @@ pub async fn values(
     let locker = SearchService::QUEUE_LOCKER.clone();
     let _locker = locker.lock().await;
 
-    // search
+    // search  根据参数构建req
     let mut req = meta::search::Request {
         query: meta::search::Query {
             sql: default_sql.clone(),

@@ -41,7 +41,7 @@ use crate::service::stream;
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/{stream_name}/schema")]
+#[get("/{org_id}/{stream_name}/schema")]  // 查看某个stream此时的schema信息
 async fn schema(
     path: web::Path<(String, String)>,
     req: HttpRequest,
@@ -60,6 +60,7 @@ async fn schema(
         }
     };
     let stream_type = stream_type.unwrap_or(StreamType::Logs);
+    // 获取某个流的数据
     stream::get_stream(&org_id, &stream_name, stream_type).await
 }
 
@@ -81,7 +82,7 @@ async fn schema(
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/{stream_name}/settings")]
+#[post("/{org_id}/{stream_name}/settings")]   // 更新stream的配置项
 async fn settings(
     path: web::Path<(String, String)>,
     settings: web::Json<StreamSettings>,
@@ -115,6 +116,7 @@ async fn settings(
         }
     };
     let stream_type = stream_type.unwrap_or(StreamType::Logs);
+    // 更新settings
     stream::save_stream_settings(&org_id, &stream_name, stream_type, settings.into_inner()).await
 }
 
@@ -135,7 +137,7 @@ async fn settings(
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[delete("/{org_id}/{stream_name}")]
+#[delete("/{org_id}/{stream_name}")]  //  删除某个stream 实际上是删除某个stream所有的schema  这样也就认为stream被删除了
 async fn delete(
     path: web::Path<(String, String)>,
     req: HttpRequest,
@@ -173,7 +175,7 @@ async fn delete(
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/streams")]
+#[get("/{org_id}/streams")]    // 查看某个org下所有streams
 async fn list(org_id: web::Path<String>, req: HttpRequest) -> impl Responder {
     let query = web::Query::<HashMap<String, String>>::from_query(req.query_string()).unwrap();
     let stream_type = match get_stream_type_from_request(&query) {
@@ -188,6 +190,7 @@ async fn list(org_id: web::Path<String>, req: HttpRequest) -> impl Responder {
         }
     };
 
+    // 是否还要返回关联的schema 
     let fetch_schema = match query.get("fetchSchema") {
         Some(s) => match s.to_lowercase().as_str() {
             "true" => true,

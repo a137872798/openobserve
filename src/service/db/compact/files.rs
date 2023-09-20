@@ -65,6 +65,7 @@ pub async fn set_offset(
     Ok(())
 }
 
+// 当某个schema被删除时 也会触发该方法
 pub async fn del_offset(
     org_id: &str,
     stream_name: &str,

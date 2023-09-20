@@ -29,14 +29,14 @@ pub struct Eventer;
 #[tonic::async_trait]
 impl Event for Eventer {
 
-    // 集群中每个节点在更新file_list后会同步到其他节点
+    // FileList中每个文件是数据文件 而不是文件清单
     async fn send_file_list(
         &self,
         req: Request<FileList>,
     ) -> Result<Response<EmptyResponse>, Status> {
         let start = std::time::Instant::now();
 
-        // tracing 的先忽略
+        // TODO tracing 的先忽略
         let parent_cx = global::get_text_map_propagator(|prop| {
             prop.extract(&super::MetadataMap(req.metadata()))
         });
@@ -47,12 +47,11 @@ impl Event for Eventer {
         // 遍历每个文件信息
         for file in req.items.iter() {
             // log::info!("received event:file {:?}", file);
-            // 将文件信息写入本地缓存和 DB
             if let Err(e) = file_list::progress(
                 &file.key,
                 FileMeta::from(file.meta.as_ref().unwrap()),
                 file.deleted,  // 描述该文件是被删除了还是新增
-                true,  // 代表需要将file_list中的某个文件描述信息读取到内存
+                true,  // 代表需要缓存数据
             )
             .await
             {

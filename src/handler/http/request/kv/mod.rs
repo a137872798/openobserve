@@ -36,7 +36,7 @@ use crate::service::kv;
         (status = 404, description="NotFound", content_type = "text/plain", body = String),
     )
 )]
-#[get("/{org_id}/kv/{key}")]
+#[get("/{org_id}/kv/{key}")]    // 查询kv
 pub async fn get(path: web::Path<(String, String)>) -> Result<HttpResponse, Error> {
     let (org_id, key) = path.into_inner();
     match kv::get(&org_id, &key).await {
@@ -67,7 +67,7 @@ pub async fn get(path: web::Path<(String, String)>) -> Result<HttpResponse, Erro
         (status = 500, description="Error", content_type = "text/plain", body = String),
     )
 )]
-#[post("/{org_id}/kv/{key}")]
+#[post("/{org_id}/kv/{key}")]  // 设置kv
 pub async fn set(
     path: web::Path<(String, String)>,
     body: web::Bytes,

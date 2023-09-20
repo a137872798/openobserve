@@ -364,7 +364,7 @@ impl RwFile {
         // 产生文件
         std::fs::create_dir_all(Path::new(&file_path).parent().unwrap()).unwrap();
 
-        // use_cache 代表
+        // use_cache 代表用内存模拟文件
         let (file, cache) = if use_cache {
             (None, Some(RwLock::new(BytesMut::with_capacity(524288)))) // 512KB
         } else {

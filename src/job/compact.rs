@@ -18,6 +18,7 @@ use crate::common::infra::cluster::is_compactor;
 use crate::common::infra::config::CONFIG;
 use crate::service;
 
+// 定期压缩数据文件
 pub async fn run() -> Result<(), anyhow::Error> {
     if !is_compactor(&super::cluster::LOCAL_NODE_ROLE) {
         return Ok(());

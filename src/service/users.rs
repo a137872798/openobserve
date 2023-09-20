@@ -37,14 +37,14 @@ use crate::{
 * 将用户插入表中
 */
 pub async fn post_user(org_id: &str, usr_req: UserRequest) -> Result<HttpResponse, Error> {
-    // root用户查询 不需要orgId
+    // 检查用户是否已经存在
     let existing_user = if is_root_user(&usr_req.email) {
         db::user::get(None, &usr_req.email).await
     } else {
         db::user::get(Some(org_id), &usr_req.email).await
     };
 
-    // err 代表没查到用户 才是正常情况
+    // 查询失败 
     if existing_user.is_err() {
         let salt = Uuid::new_v4().to_string();
         let password = get_hash(&usr_req.password, &salt);
@@ -65,11 +65,12 @@ pub async fn post_user(org_id: &str, usr_req: UserRequest) -> Result<HttpRespons
     }
 }
 
+// 更新用户数据
 pub async fn update_user(
     org_id: &str,
     email: &str,
-    self_update: bool,
-    initiator_id: &str,
+    self_update: bool,  // 是否是自己发起的更新
+    initiator_id: &str,  // 当前登录的用户id
     user: UpdateUser,
 ) -> Result<HttpResponse, Error> {
     let mut allow_password_update = false;
@@ -80,6 +81,7 @@ pub async fn update_user(
         db::user::get(Some(org_id), email).await
     };
 
+    // 一定要用户存在的情况才能更新
     if existing_user.is_ok() {
         let mut new_user;
         let mut is_updated = false;
@@ -88,6 +90,7 @@ pub async fn update_user(
         match existing_user.unwrap() {
             Some(local_user) => {
                 if !self_update {
+                    // 需要检查是否有更新权限
                     if is_root_user(initiator_id) {
                         allow_password_update = true
                     } else {
@@ -95,6 +98,7 @@ pub async fn update_user(
                             .await
                             .unwrap()
                             .unwrap();
+                        // 可以看到对修改者和被修改者 都有角色要求
                         if (local_user.role.eq(&UserRole::Root)
                             && initiating_user.role.eq(&UserRole::Root))
                             || (!local_user.role.eq(&UserRole::Root)
@@ -107,6 +111,7 @@ pub async fn update_user(
                 }
 
                 new_user = local_user.clone();
+                // 自我更新需要传入原密码 
                 if self_update && user.old_password.is_some() && user.new_password.is_some() {
                     if local_user.password.eq(&get_hash(
                         &user.clone().old_password.unwrap(),
@@ -207,17 +212,22 @@ pub async fn update_user(
     }
 }
 
+// 让用户以该角色加入组织
 pub async fn add_user_to_org(
     org_id: &str,
-    email: &str,
-    role: UserRole,
-    initiator_id: &str,
+    email: &str,  // 待操作的用户
+    role: UserRole,  // 角色
+    initiator_id: &str,  // 当前登录用户
 ) -> Result<HttpResponse, Error> {
+
+    // 先通过用户名 找到用户
     let existing_user = db::user::get_db_user(email).await;
     let root_user = ROOT_USER.clone();
     if existing_user.is_ok() {
         let mut db_user = existing_user.unwrap();
         let local_org;
+
+        // 获取当前登录用户
         let initiating_user = if is_root_user(initiator_id) {
             local_org = org_id.replace(' ', "_");
             root_user.get("root").unwrap().clone()
@@ -229,7 +239,9 @@ pub async fn add_user_to_org(
                 .unwrap()
         };
         if initiating_user.role.eq(&UserRole::Root) || initiating_user.role.eq(&UserRole::Admin) {
+            // 用户与组织的关联 需要一个token
             let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+            // 更新用户的 org信息
             let mut orgs = db_user.clone().organizations;
             let new_orgs = if orgs.is_empty() {
                 vec![UserOrg {
@@ -290,9 +302,12 @@ pub async fn get_user(org_id: Option<&str>, name: &str) -> Option<User> {
     }
 }
 
+// 查看某个org下所有用户
 pub async fn list_users(org_id: &str) -> Result<HttpResponse, Error> {
     let mut user_list: Vec<UserResponse> = vec![];
+    // 从缓存中获取用户数据
     for user in USERS.iter() {
+        // 找到 org 匹配的用户
         if user.key().starts_with(&format!("{org_id}/")) {
             user_list.push(UserResponse {
                 email: user.value().email.clone(),
@@ -306,12 +321,14 @@ pub async fn list_users(org_id: &str) -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(UserList { data: user_list }))
 }
 
+// 解开某个用户和org的关系
 pub async fn remove_user_from_org(org_id: &str, email_id: &str) -> Result<HttpResponse, Error> {
     let ret_user = db::user::get_db_user(email_id).await;
     match ret_user {
         Ok(mut user) => {
             if !user.organizations.is_empty() {
                 let mut orgs = user.clone().organizations;
+                // 如果该用户没有任何组织关系 就可以直接删除该用户了 
                 if orgs.len() == 1 {
                     let _ = db::user::delete(email_id).await;
                 } else {

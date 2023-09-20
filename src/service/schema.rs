@@ -32,18 +32,20 @@ use crate::common::utils::schema_ext::SchemaExt;
 use crate::service::db;
 use crate::service::search::server_internal_error;
 
+// 在处理某个数据文件时  根据内容推导出来的schema
 #[tracing::instrument(name = "service:schema:schema_evolution", skip(inferred_schema))]
 pub async fn schema_evolution(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
-    inferred_schema: Arc<Schema>,
-    min_ts: i64,
+    inferred_schema: Arc<Schema>,  // 推导出来的schema
+    min_ts: i64,  // 该文件的最小时间
 ) {
     let schema = db::schema::get(org_id, stream_name, stream_type)
         .await
         .unwrap();
 
+    // 如果数据库中没有 则插入
     if schema == Schema::empty() {
         let mut metadata = HashMap::new();
         metadata.insert("created_at".to_string(), min_ts.to_string());
@@ -58,8 +60,12 @@ pub async fn schema_evolution(
         )
             .await
             .unwrap();
+
+        // 此时schema与最新的不同
     } else if !inferred_schema.fields().eq(schema.fields()) {
         let schema_fields: HashSet<_> = schema.fields().iter().collect();
+
+        // 找到新增的field 和 类型变化的field
         let mut field_datatype_delta: Vec<_> = vec![];
         let mut new_field_delta: Vec<_> = vec![];
 
@@ -78,6 +84,8 @@ pub async fn schema_evolution(
                 }
             }
         }
+
+        // 不需要做任何处理
         if field_datatype_delta.is_empty() && new_field_delta.is_empty() {
             return;
         }
@@ -87,6 +95,8 @@ pub async fn schema_evolution(
             field_datatype_delta,
             new_field_delta
         );
+
+        // 尝试将2个schema进行合并
         match try_merge(vec![schema.clone(), inferred_schema.as_ref().clone()]) {
             Err(e) => {
                 log::error!(
@@ -95,6 +105,7 @@ pub async fn schema_evolution(
                     e
                 );
             }
+            // 合并成功
             Ok(merged) => {
                 if !field_datatype_delta.is_empty() || !new_field_delta.is_empty() {
                     let is_field_delta = !field_datatype_delta.is_empty();
@@ -105,6 +116,7 @@ pub async fn schema_evolution(
                     for field in merged.to_cloned_fields().into_iter() {
                         let mut field = field.clone();
                         let mut new_meta = field.metadata().clone();
+                        // 移除掉 zo_cast 标记
                         if new_meta.contains_key("zo_cast") {
                             new_meta.remove_entry("zo_cast");
                             field.set_metadata(new_meta);
@@ -129,6 +141,7 @@ pub async fn schema_evolution(
 }
 
 // Hack to allow widening conversion, method overrides Schema::try_merge
+// 尝试合并多个schema
 fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowError> {
     let mut merged_metadata: HashMap<String, String> = HashMap::new();
     let mut merged_fields: Vec<Field> = Vec::new();
@@ -137,7 +150,7 @@ fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowErr
 
     for schema in schemas {
         for (key, value) in schema.metadata() {
-            // merge metadata
+            // merge metadata  元数据必须一致
             if let Some(old_val) = merged_metadata.get(key) {
                 if old_val != value {
                     return Err(ArrowError::SchemaError(
@@ -150,15 +163,26 @@ fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowErr
 
         // merge fields
         let mut found_at = 0;
+
+        // 处理每个字段
         for field in schema.to_cloned_fields().iter().sorted_by_key(|v| v.name()) {
             let mut new_field = true;
             let mut allowed = false;
+
+            // 遍历之前的每个field
             for (stream, mut merged_field) in merged_fields.iter_mut().enumerate() {
+
+                // 找到同名field
                 if field.name() != merged_field.name() {
                     continue;
                 }
+
+                // 因为发现了同名 所以这个field不是最新的
                 new_field = false;
+
+                // 发现类型不一致
                 if merged_field.data_type() != field.data_type() {
+                    // 代表不允许schema发生变化
                     if !CONFIG.common.widening_schema_evolution {
                         return Err(ArrowError::SchemaError(format!(
                             "Fail to merge schema due to conflicting data type[{}:{}].",
@@ -166,6 +190,8 @@ fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowErr
                             field.data_type()
                         )));
                     }
+
+                    // 类型能否兼容
                     allowed = is_widening_conversion(merged_field.data_type(), field.data_type());
                     if allowed {
                         temp_field = Field::new(
@@ -177,6 +203,8 @@ fn try_merge(schemas: impl IntoIterator<Item=Schema>) -> Result<Schema, ArrowErr
                     }
                 }
                 found_at = stream;
+
+                // 将2个字段合并
                 match merged_field.try_merge(field) {
                     Ok(_) => {}
                     Err(_) => {

@@ -54,7 +54,7 @@ pub const PARQUET_MAX_ROW_GROUP_SIZE: usize = 1024 * 1024;
 
 pub static CONFIG: Lazy<Config> = Lazy::new(init);
 
-// 缓存实例id
+// 缓存实例id 整个集群唯一
 pub static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 
 pub static TELEMETRY_CLIENT: Lazy<segment::HttpClient> = Lazy::new(|| {
@@ -69,10 +69,17 @@ pub static TELEMETRY_CLIENT: Lazy<segment::HttpClient> = Lazy::new(|| {
 
 // global cache variables
 pub static KVS: Lazy<RwHashMap<String, bytes::Bytes>> = Lazy::new(Default::default);
+
+// 存储每个stream出现过的所有schema
 pub static STREAM_SCHEMAS: Lazy<RwHashMap<String, Vec<Schema>>> = Lazy::new(Default::default);
+
+
 pub static STREAM_FUNCTIONS: Lazy<RwHashMap<String, StreamFunctionsList>> =
     Lazy::new(DashMap::default);
+// 有2种函数 一种关联到stream上 对应STREAM_FUNCTIONS  还有种不用关联stream 存放在这里
 pub static QUERY_FUNCTIONS: Lazy<RwHashMap<String, Transform>> = Lazy::new(DashMap::default);
+
+// 缓存了每个用户
 pub static USERS: Lazy<RwHashMap<String, User>> = Lazy::new(DashMap::default);
 pub static ROOT_USER: Lazy<RwHashMap<String, User>> = Lazy::new(DashMap::default);
 pub static PASSWORD_HASH: Lazy<RwHashMap<String, String>> = Lazy::new(DashMap::default);
@@ -184,6 +191,7 @@ pub struct Common {
     pub local_mode_storage: String,
     #[env_config(name = "ZO_META_STORE", default = "")]
     pub meta_store: String,
+    // 为false时 就需要从storage上拉取file_list
     pub meta_store_external: bool, // external storage no need sync file_list to s3
     #[env_config(name = "ZO_META_STORE_POSTGRES_DSN", default = "")]
     pub meta_store_postgres_dsn: String,
@@ -211,6 +219,7 @@ pub struct Common {
     pub parquet_compression: String,
     #[env_config(name = "ZO_COLUMN_TIMESTAMP", default = "_timestamp")]
     pub column_timestamp: String,
+    // 是否允许schema发生变化
     #[env_config(name = "ZO_WIDENING_SCHEMA_EVOLUTION", default = false)]
     pub widening_schema_evolution: bool,
     #[env_config(name = "ZO_SKIP_SCHEMA_VALIDATION", default = false)]

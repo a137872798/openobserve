@@ -42,11 +42,14 @@ pub mod es;
         (status = 200, description="Success", content_type = "application/json", body = OrganizationResponse),
     )
 )]
-#[get("/{org_id}/organizations")]
+#[get("/{org_id}/organizations")]     // 返回当前用户所属全部组织
 pub async fn organizations(credentials: BasicAuth) -> Result<HttpResponse, Error> {
+
+    // 获取设置的用户id
     let user_id = credentials.user_id();
     let mut id = 0;
 
+    // 获取该用户所属的所有组织
     let mut orgs: Vec<OrgDetails> = vec![];
     let mut org_names = HashSet::new();
     let user_detail = OrgUser {
@@ -56,9 +59,12 @@ pub async fn organizations(credentials: BasicAuth) -> Result<HttpResponse, Error
     };
 
     let is_root_user = is_root_user(user_id);
+    // 判断是否是root用户
     if is_root_user {
         id += 1;
+        // 添加一个默认组织
         org_names.insert(DEFAULT_ORG.to_string());
+        // 往OrgDetails容器中查询一个新组织
         orgs.push(OrgDetails {
             id,
             identifier: DEFAULT_ORG.to_string(),
@@ -70,7 +76,10 @@ pub async fn organizations(credentials: BasicAuth) -> Result<HttpResponse, Error
             user_obj: user_detail.clone(),
         });
 
+        // 默认用户可以返回所有有效组织
         for schema in STREAM_SCHEMAS.iter() {
+
+            // 意思是 key上有org
             if !schema.key().contains('/') {
                 continue;
             }
@@ -92,10 +101,14 @@ pub async fn organizations(credentials: BasicAuth) -> Result<HttpResponse, Error
             }
         }
     }
+
+    // 找到该用户所属的所有组织
     for user in USERS.iter() {
         if !user.key().contains('/') {
             continue;
         }
+
+        // 必须以该用户结尾
         if !user.key().ends_with(&format!("/{user_id}")) {
             continue;
         }
@@ -137,7 +150,7 @@ pub async fn organizations(credentials: BasicAuth) -> Result<HttpResponse, Error
         (status = 200, description="Success", content_type = "application/json", body = OrgSummary),
     )
 )]
-#[get("/{org_id}/summary")]
+#[get("/{org_id}/summary")]    // 返回某个组织的描述信息
 async fn org_summary(org_id: web::Path<String>) -> Result<HttpResponse, Error> {
     let org = org_id.into_inner();
     let org_summary = organization::get_summary(&org).await;
@@ -159,7 +172,7 @@ async fn org_summary(org_id: web::Path<String>) -> Result<HttpResponse, Error> {
         (status = 200, description="Success", content_type = "application/json", body = PasscodeResponse),
     )
 )]
-#[get("/{org_id}/organizations/passcode")]
+#[get("/{org_id}/organizations/passcode")]  // 获取当前用户的密码
 async fn get_user_passcode(
     credentials: BasicAuth,
     org_id: web::Path<String>,
@@ -167,9 +180,13 @@ async fn get_user_passcode(
     let org = org_id.into_inner();
     let user_id = credentials.user_id();
     let mut org_id = Some(org.as_str());
+
+    // 如果是root用户 org_id为空
     if is_root_user(user_id) {
         org_id = None;
     }
+
+    // 查询用户密码
     let passcode = get_passcode(org_id, user_id).await;
     Ok(HttpResponse::Ok().json(PasscodeResponse { data: passcode }))
 }
@@ -189,7 +206,7 @@ async fn get_user_passcode(
         (status = 200, description="Success", content_type = "application/json", body = PasscodeResponse),
     )
 )]
-#[put("/{org_id}/organizations/passcode")]
+#[put("/{org_id}/organizations/passcode")]  // 更新密码
 async fn update_user_passcode(
     credentials: BasicAuth,
     org_id: web::Path<String>,

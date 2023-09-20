@@ -20,12 +20,15 @@ use crate::common::meta::StreamType;
 use crate::common::utils::file::scan_files;
 use crate::service::db;
 
+// 随着 file后台任务的运行  file_list会始终保持最新以及在集群间同步     而file_list的后台任务则是负责将file_list推送到 远端仓库
 pub async fn run() -> Result<(), anyhow::Error> {
     if CONFIG.common.local_mode || CONFIG.common.meta_store_external {
         return Ok(());
     }
 
+    // 将记录file_list的wal文件推送到storage
     tokio::task::spawn(async move { run_move_file_to_s3().await });
+    // 从storage同步数据到缓存
     tokio::task::spawn(async move { run_sync_s3_to_cache().await });
 
     Ok(())
@@ -48,15 +51,19 @@ pub async fn run_move_file_to_s3() -> Result<(), anyhow::Error> {
 
 /*
  * upload compressed file_list to storage & delete moved files from local
+ * 将file_list 推送到storage    记得在file的后台任务中会看到被上传的文件会写入一个 streamType为fileList的 wal
+ * 注意该wal只有fs类型
  */
 async fn move_file_list_to_storage() -> Result<(), anyhow::Error> {
     let data_dir = Path::new(&CONFIG.common.data_wal_dir)
         .canonicalize()
         .unwrap();
 
+    // 找到专门记录 file_list 的wal文件
     let pattern = format!("{}file_list/", &CONFIG.common.data_wal_dir);
     let files = scan_files(&pattern);
 
+    // 将这些文件推送到 storage
     for file in files {
         let local_file = file.to_owned();
         let local_path = Path::new(&file).canonicalize().unwrap();
@@ -76,12 +83,15 @@ async fn move_file_list_to_storage() -> Result<(), anyhow::Error> {
             file_name = file_name.replace('_', "/");
         }
 
-        // check the file is using for write
+        // check the file is using for write   跳过还在写入的wal文件
         if wal::check_in_use("", "", StreamType::Filelist, &file_name) {
             continue;
         }
         log::info!("[JOB] convert file_list: {}", file);
+
+        // 将file_list 上传到storage
         match upload_file(&local_file, &file_name).await {
+            // 上传完毕后就可以删除wal文件了
             Ok(_) => match fs::remove_file(&local_file) {
                 Ok(_) => {}
                 Err(e) => {
@@ -98,6 +108,7 @@ async fn move_file_list_to_storage() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 将file_list 的wal文件传输到 storage
 async fn upload_file(path_str: &str, file_key: &str) -> Result<(), anyhow::Error> {
     let mut file = fs::File::open(path_str).unwrap();
     let file_meta = file.metadata().unwrap();
@@ -110,6 +121,7 @@ async fn upload_file(path_str: &str, file_key: &str) -> Result<(), anyhow::Error
         return Err(anyhow::anyhow!("File_list is empty: {}", path_str));
     }
 
+    // 按照zst编码
     let mut encoder = zstd::Encoder::new(Vec::new(), 3)?;
     std::io::copy(&mut file, &mut encoder)?;
     let compressed_bytes = encoder.finish().unwrap();
@@ -133,6 +145,7 @@ async fn upload_file(path_str: &str, file_key: &str) -> Result<(), anyhow::Error
     }
 }
 
+// 从storage同步数据到缓存
 async fn run_sync_s3_to_cache() -> Result<(), anyhow::Error> {
     if !cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
         && !cluster::is_compactor(&cluster::LOCAL_NODE_ROLE)

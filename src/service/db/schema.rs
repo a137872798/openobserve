@@ -216,6 +216,7 @@ pub async fn set(
     Ok(())
 }
 
+// 删除某个流相关的所有schema  (实际上能够查询到stream关联的schema 就认为stream是存在的  反之认为流不存在 )
 pub async fn delete(
     org_id: &str,
     stream_name: &str,
@@ -234,6 +235,7 @@ pub async fn delete(
     Ok(())
 }
 
+// 从缓存中获取某个组织相关的所有schema
 #[tracing::instrument]
 fn list_stream_schemas(
     org_id: &str,
@@ -271,12 +273,15 @@ fn list_stream_schemas(
         .collect()
 }
 
+// 从db查某个org的所有schema
 #[tracing::instrument(name = "db:schema:list")]
 pub async fn list(
     org_id: &str,
     stream_type: Option<StreamType>,
     fetch_schema: bool,
 ) -> Result<Vec<StreamSchema>, anyhow::Error> {
+
+    // 尝试从缓存获取
     if !STREAM_SCHEMAS.is_empty() {
         return Ok(list_stream_schemas(org_id, stream_type, fetch_schema));
     }
@@ -286,6 +291,8 @@ pub async fn list(
         None => format!("/schema/{org_id}/"),
         Some(stream_type) => format!("/schema/{org_id}/{stream_type}/"),
     };
+
+    // 从DB查询结果
     Ok(db
         .list(&db_key)
         .await?
@@ -314,9 +321,10 @@ pub async fn list(
 }
 
 /**
-* 监听schema数据的变化
+* 监听schema变化事件
 */
 pub async fn watch() -> Result<(), anyhow::Error> {
+    // 任何stream的schema 都是以 /schema/作为前缀的
     let key = "/schema/";
     let db = &infra_db::CLUSTER_COORDINATOR;
     let mut events = db.watch(key).await?;
@@ -340,9 +348,8 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                 // 也是将字段同步到缓存
                 let item_value: Vec<Schema> = json::from_slice(&ev.value.unwrap()).unwrap();
                 STREAM_SCHEMAS.insert(item_key.to_owned(), item_value.clone());
-                // 得到后面的部分
-                let keys = item_key.split('/').collect::<Vec<&str>>();
 
+                let keys = item_key.split('/').collect::<Vec<&str>>();
                 // 拆分出来的3部分 精确到stream类型和name
                 let org_id = keys[0];
                 let stream_type = StreamType::from(keys[1]);
@@ -380,7 +387,7 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                     log::error!("del_offset: {}", e);
                 }
 
-                // 移除对应的数据
+                // TODO
                 if stream_type.eq(&StreamType::EnrichmentTables) && is_local_disk_storage() {
                     let data_dir = format!(
                         "{}files/{org_id}/{stream_type}/{stream_name}",
@@ -398,6 +405,7 @@ pub async fn watch() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 将DB数据加载到缓存
 pub async fn cache() -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/schema/";

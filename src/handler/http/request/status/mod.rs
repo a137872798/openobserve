@@ -28,6 +28,7 @@ use crate::common::meta::functions::ZoFunction;
 use crate::common::utils::json;
 use crate::service::{db, search::datafusion::DEFAULT_FUNCTIONS};
 
+// 描述服务的健康状态
 #[derive(Serialize, ToSchema)]
 pub struct HealthzResponse {
     status: String,
@@ -42,7 +43,7 @@ struct ConfigResponse<'a> {
     functions_enabled: bool,
     default_fts_keys: Vec<String>,
     telemetry_enabled: bool,
-    default_functions: Vec<ZoFunction<'a>>,
+    default_functions: Vec<ZoFunction<'a>>,  // zofun 就是2个 str
     lua_fn_enabled: bool,
     sql_base64_enabled: bool,
     timestamp_column: String,
@@ -58,7 +59,7 @@ struct ConfigResponse<'a> {
         (status = 200, description="Staus OK", content_type = "application/json", body = HealthzResponse, example = json!({"status": "ok"}))
     )
 )]
-#[get("/healthz")]
+#[get("/healthz")]   // 健康检查 直接返回结果
 pub async fn healthz() -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(HealthzResponse {
         status: "ok".to_string(),
@@ -66,7 +67,7 @@ pub async fn healthz() -> Result<HttpResponse, Error> {
 }
 
 #[get("")]
-pub async fn zo_config() -> Result<HttpResponse, Error> {
+pub async fn zo_config() -> Result<HttpResponse, Error> {  // 获取某些可展示的配置项
     Ok(HttpResponse::Ok().json(ConfigResponse {
         version: config::VERSION.to_string(),
         instance: INSTANCE_ID.get("instance_id").unwrap().to_string(),
@@ -87,7 +88,7 @@ pub async fn zo_config() -> Result<HttpResponse, Error> {
     }))
 }
 
-#[get("/cache/status")]
+#[get("/cache/status")]  // 查看缓存状态
 pub async fn cache_status() -> Result<HttpResponse, Error> {
     let mut stats: HashMap<&str, json::Value> = HashMap::default();
     stats.insert(
@@ -135,6 +136,7 @@ pub async fn cache_status() -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(stats))
 }
 
+// 获取stream schema的状态 
 fn get_stream_schema_status() -> (usize, usize, usize) {
     let mut stream_num = 0;
     let mut stream_schema_num = 0;

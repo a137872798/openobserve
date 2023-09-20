@@ -68,6 +68,7 @@ INSERT INTO file_list (org, stream, date, file, deleted, min_ts, max_ts, records
         .bind(meta.compressed_size)
         .execute(&pool)
         .await {
+            // 忽略重复数据
             Err(sqlx::Error::Database(e)) => if e.is_unique_violation() {
                   Ok(())
             } else {

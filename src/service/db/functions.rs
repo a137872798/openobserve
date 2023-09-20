@@ -97,11 +97,11 @@ pub async fn watch() -> Result<(), anyhow::Error> {
                 let org_id = &item_key[0..item_key.find('/').unwrap()];
                 let item_value: Transform = json::from_slice(&ev.value.unwrap()).unwrap();
 
-                // 表示该function绑定在多个stream上
+                // 处理该fun关联的streams
                 if item_value.streams.is_some() {
                     for stream_fn in item_value.to_stream_transform() {
 
-                        // 也是利用缓存
+                        // 同步缓存
                         let mut group = STREAM_FUNCTIONS
                             .entry(format!(
                                 "{}/{}/{}",

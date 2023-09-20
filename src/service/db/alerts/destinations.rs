@@ -85,6 +85,7 @@ pub async fn list(org_id: &str) -> Result<Vec<AlertDestinationResponse>, anyhow:
     Ok(temp_list)
 }
 
+// 监听告警目的地
 pub async fn watch() -> Result<(), anyhow::Error> {
     let key = "/destinations/";
     let db = &infra_db::CLUSTER_COORDINATOR;

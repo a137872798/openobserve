@@ -36,11 +36,14 @@ const LOCAL: &str = "disk";
 const S3: &str = "s3";
 const SIZE_IN_MB: f64 = 1024.0 * 1024.0;
 
+// 获取流的数据
 pub async fn get_stream(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
 ) -> Result<HttpResponse, Error> {
+
+    // 先从cache/db查找schema
     let schema = db::schema::get(org_id, stream_name, stream_type)
         .await
         .unwrap();
@@ -71,17 +74,18 @@ pub async fn get_stream(
     }
 }
 
+// 查询某个组织下所有stream
 pub async fn get_streams(
     org_id: &str,
     stream_type: Option<StreamType>,
-    fetch_schema: bool,
+    fetch_schema: bool,  // 代表返回信息中还要包含最新的schema
 ) -> Vec<Stream> {
     let indices = db::schema::list(org_id, stream_type, fetch_schema)
         .await
         .unwrap();
     let mut indices_res = Vec::with_capacity(indices.len());
 
-    // get all steam stats
+    // get all steam stats  获取统计数据
     let all_stats = if !CONFIG.common.usage_enabled {
         HashMap::new()
     } else {
@@ -90,7 +94,11 @@ pub async fn get_streams(
             .unwrap_or_default()
     };
 
+
+    // 遍历获取到的每个stream
     for stream_loc in indices {
+
+        // 获取这个stream的统计数据
         let mut stats = if !CONFIG.common.usage_enabled {
             stats::get_stream_stats(
                 org_id,
@@ -102,6 +110,8 @@ pub async fn get_streams(
                 .get(format!("{}/{}", stream_loc.stream_name, stream_loc.stream_type).as_str())
                 .unwrap_or(&StreamStats::default())
         };
+
+        // 把他们转换后 存入结果容器
         if stats.eq(&StreamStats::default()) {
             indices_res.push(stream_res(
                 stream_loc.stream_name.as_str(),
@@ -122,7 +132,7 @@ pub async fn get_streams(
     indices_res
 }
 
-// 需要传入schema 以及 stream_name 查询 stream
+// 将相关信息组合成一个完整的stream
 pub fn stream_res(
     stream_name: &str,
     stream_type: StreamType,
@@ -130,7 +140,7 @@ pub fn stream_res(
     stats: Option<StreamStats>,
 ) -> Stream {
 
-    // 获取存储模式 描述数据存储在本地 或者远端  不过在数据写入时 总是会先进入本地磁盘  应该是有后台任务将数据传输到远端
+    // 获取存储模式 描述数据存储在本地 或者远端 不过在数据写入时 总是会先进入本地磁盘  应该是有后台任务将数据传输到远端
     let storage_type = if is_local_disk_storage() { LOCAL } else { S3 };
 
     // 将schema转换成 stream_property
@@ -193,6 +203,7 @@ pub fn stream_res(
     }
 }
 
+// 更新stream配置
 #[tracing::instrument(skip(setting))]
 pub async fn save_stream_settings(
     org_id: &str,
@@ -200,7 +211,7 @@ pub async fn save_stream_settings(
     stream_type: StreamType,
     setting: StreamSettings,
 ) -> Result<HttpResponse, Error> {
-    // check if we are allowed to ingest
+    // check if we are allowed to ingest   表示该stream即将被删除 无法修改
     if db::compact::retention::is_deleting_stream(org_id, stream_name, stream_type, None) {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(
@@ -210,6 +221,7 @@ pub async fn save_stream_settings(
         );
     }
 
+    // 数据归属于不同的分区 会落在不同的数据文件   全文检索key 不能作为分区键
     for key in setting.partition_keys.iter() {
         if SQL_FULL_TEXT_SEARCH_FIELDS.contains(&key.as_str()) {
             return Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
@@ -219,10 +231,13 @@ pub async fn save_stream_settings(
         }
     }
 
+    // 获取该stream的schema
     let schema = db::schema::get(org_id, stream_name, stream_type)
         .await
         .unwrap();
     let mut metadata = schema.metadata.clone();
+
+    // 更新settings
     metadata.insert("settings".to_string(), json::to_string(&setting).unwrap());
     if !metadata.contains_key("created_at") {
         metadata.insert(
@@ -247,12 +262,15 @@ pub async fn save_stream_settings(
     )))
 }
 
+// 删除某个stream
 #[tracing::instrument]
 pub async fn delete_stream(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
 ) -> Result<HttpResponse, Error> {
+
+    // 获取往期所有schema
     let schema = db::schema::get_versions(org_id, stream_name, stream_type)
         .await
         .unwrap();
@@ -263,7 +281,7 @@ pub async fn delete_stream(
         )));
     }
 
-    // create delete for compactor
+    // create delete for compactor   在CACHE中标记该stream已经被删除
     if let Err(e) =
         db::compact::retention::delete_stream(org_id, stream_name, stream_type, None).await
     {
@@ -275,7 +293,7 @@ pub async fn delete_stream(
         );
     }
 
-    // delete stream schema
+    // delete stream schema   现在开始真正的删除操作
     if let Err(e) = db::schema::delete(org_id, stream_name, Some(stream_type)).await {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(
@@ -292,7 +310,7 @@ pub async fn delete_stream(
     // delete stream stats cache
     stats::remove_stream_stats(org_id, stream_name, stream_type);
 
-    // delete stream compaction offset
+    // delete stream compaction offset    删除记录stream压缩情况的偏移量
     if let Err(e) = db::compact::files::del_offset(org_id, stream_name, stream_type).await {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(

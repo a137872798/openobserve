@@ -22,6 +22,7 @@ use crate::{job::syslog_server::BROADCASTER, service::logs::syslog};
 
 pub static STOP_SRV: &str = "ZO_STOP_TCP_UDP";
 
+// 开放udp协议 接收数据 并使用 syslog::ingest 进行处理
 pub async fn udp_server(socket: UdpSocket) {
     let mut buf_udp = vec![0u8; 1024];
     let sender = BROADCASTER.read().await;
@@ -43,6 +44,7 @@ pub async fn udp_server(socket: UdpSocket) {
     }
 }
 
+//
 pub async fn tcp_server(listener: TcpListener) {
     let sender = BROADCASTER.read().await;
     let mut tcp_receiver_rx = sender.subscribe();

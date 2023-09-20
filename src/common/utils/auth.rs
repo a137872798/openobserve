@@ -42,6 +42,7 @@ pub(crate) fn get_hash(pass: &str, salt: &str) -> String {
     }
 }
 
+// 判断该用户是否是root用户
 pub(crate) fn is_root_user(user_id: &str) -> bool {
     match USERS.get(&format!("{DEFAULT_ORG}/{user_id}")) {
         Some(user) => user.role.eq(&UserRole::Root),

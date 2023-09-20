@@ -48,6 +48,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
         })
         .unwrap()
     } else {
+        // 也可以只通知一个节点
         get_node_by_uuid(&node_uuid.unwrap())
             .map(|node| vec![node])
             .unwrap_or_default()
@@ -114,7 +115,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
 }
 
 /**
-*
+* 将事件推送到其他节点
 */
 async fn send_to_node(
     node: cluster::Node,
