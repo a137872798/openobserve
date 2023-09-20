@@ -34,7 +34,7 @@ use crate::{common::meta::alert::DestinationTemplate, service::alerts::templates
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/alerts/templates/{template_name}")]
+#[post("/{org_id}/alerts/templates/{template_name}")]  // 模板就是通知内容
 pub async fn save_template(
     path: web::Path<(String, String)>,
     alert: web::Json<DestinationTemplate>,

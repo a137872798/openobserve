@@ -232,6 +232,7 @@ pub async fn get_alert(
     }
 }
 
+// 为某个告警触发通知
 #[tracing::instrument]
 pub async fn trigger_alert(
     org_id: String,

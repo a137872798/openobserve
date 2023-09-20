@@ -36,7 +36,7 @@ use crate::{common::meta::alert::AlertDestination, service::alerts::destinations
         (status = 200, description="Success", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/alerts/destinations/{destination_name}")]
+#[post("/{org_id}/alerts/destinations/{destination_name}")]  // 为某个告警创建目的地 目的地就是描述告警会如何通知
 pub async fn save_destination(
     path: web::Path<(String, String)>,
     dest: web::Json<AlertDestination>,
@@ -46,7 +46,9 @@ pub async fn save_destination(
     let dest = dest.into_inner();
 
     match db::alerts::templates::get(org_id.as_str(), &dest.template).await {
+        // 查询模版
         Ok(temp) => match temp {
+            // 模板存在 就保存目的地
             Some(_) => destinations::save_destination(org_id, name, dest).await,
             None => Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
@@ -75,7 +77,7 @@ pub async fn save_destination(
         (status = 200, description="Success", content_type = "application/json", body = Vec<AlertDestinationResponse>),
     )
 )]
-#[get("/{org_id}/alerts/destinations")]
+#[get("/{org_id}/alerts/destinations")]  // 列举org下所有目的地  还会顺带查询模板
 async fn list_destinations(path: web::Path<String>) -> impl Responder {
     let org_id = path.into_inner();
     destinations::list_destinations(org_id).await
@@ -98,7 +100,7 @@ async fn list_destinations(path: web::Path<String>) -> impl Responder {
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[get("/{org_id}/alerts/destinations/{destination_name}")]
+#[get("/{org_id}/alerts/destinations/{destination_name}")]   // 查询单个目的地
 async fn get_destination(path: web::Path<(String, String)>) -> impl Responder {
     let (org_id, name) = path.into_inner();
     destinations::get_destination(org_id, name).await

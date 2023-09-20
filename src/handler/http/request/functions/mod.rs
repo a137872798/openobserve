@@ -38,7 +38,7 @@ use crate::common::utils::http::get_stream_type_from_request;
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/functions")]
+#[post("/{org_id}/functions")]   // 可以为org级别设置函数
 pub async fn save_function(
     path: web::Path<String>,
     func: web::Json<Transform>,
@@ -63,7 +63,7 @@ pub async fn save_function(
         (status = 200, description="Success", content_type = "application/json", body = FunctionList),
     )
 )]
-#[get("/{org_id}/functions")]
+#[get("/{org_id}/functions")]  // 列举该组织下所有函数
 async fn list_functions(org_id: web::Path<String>) -> Result<HttpResponse, Error> {
     crate::service::functions::list_functions(org_id.into_inner()).await
 }
@@ -85,7 +85,7 @@ async fn list_functions(org_id: web::Path<String>) -> Result<HttpResponse, Error
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[delete("/{org_id}/functions/{name}")]
+#[delete("/{org_id}/functions/{name}")]  // 删除函数   fun已经关联stream的情况下无法直接删除
 async fn delete_function(path: web::Path<(String, String)>) -> Result<HttpResponse, Error> {
     let (org_id, name) = path.into_inner();
     crate::service::functions::delete_function(org_id, name).await
@@ -109,7 +109,7 @@ async fn delete_function(path: web::Path<(String, String)>) -> Result<HttpRespon
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[put("/{org_id}/functions/{name}")]
+#[put("/{org_id}/functions/{name}")]  // 更新函数
 pub async fn update_function(
     path: web::Path<(String, String)>,
     func: web::Json<Transform>,
@@ -135,7 +135,7 @@ pub async fn update_function(
         (status = 200, description="Success", content_type = "application/json", body = StreamFunctionsList),
     )
 )]
-#[get("/{org_id}/{stream_name}/functions")]
+#[get("/{org_id}/{stream_name}/functions")]  // 查看应该关联到某个stream上的所有fun
 async fn list_stream_functions(
     path: web::Path<(String, String)>,
     req: HttpRequest,
@@ -179,7 +179,7 @@ async fn list_stream_functions(
     )
 )]
 #[delete("/{org_id}/{stream_name}/functions/{name}")]
-async fn delete_stream_function(
+async fn delete_stream_function(  // 删除stream相关的某个函数
     path: web::Path<(String, String, String)>,
     req: HttpRequest,
 ) -> Result<HttpResponse, Error> {
@@ -227,7 +227,7 @@ async fn delete_stream_function(
         (status = 400, description="Failure", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[post("/{org_id}/{stream_name}/functions/{name}")]
+#[post("/{org_id}/{stream_name}/functions/{name}")]  // 将函数关联到某个stream上
 pub async fn add_function_to_stream(
     path: web::Path<(String, String, String)>,
     stream_order: web::Json<StreamOrder>,

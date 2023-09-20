@@ -20,6 +20,7 @@ use crate::common::meta::alert::DestinationTemplate;
 use crate::common::meta::http::HttpResponse as MetaHttpResponse;
 use crate::service::db;
 
+// 存储一个目的地模板
 #[tracing::instrument(skip_all)]
 pub async fn save_template(
     org_id: String,

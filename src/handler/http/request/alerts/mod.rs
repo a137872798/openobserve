@@ -258,7 +258,7 @@ async fn delete_alert(
         (status = 404, description="NotFound", content_type = "application/json", body = HttpResponse),
     )
 )]
-#[put("/{org_id}/{stream_name}/alerts/{alert_name}/trigger")]  // 检查某个告警关联的触发对象
+#[put("/{org_id}/{stream_name}/alerts/{alert_name}/trigger")]  // 为某个告警触发通知
 async fn trigger_alert(
     path: web::Path<(String, String, String)>,
     req: HttpRequest,

@@ -36,15 +36,19 @@ const FN_ALREADY_EXIST: &str = "Function already exist";
 const FN_IN_USE: &str =
     "Function is used in streams , please remove it from the streams before deleting :";
 
+// 为某个组织存储函数
 #[tracing::instrument(skip(func))]
 pub async fn save_function(org_id: String, mut func: Transform) -> Result<HttpResponse, Error> {
+    // 每个func 有自己的名字 同名则无法插入
     if let Some(_existing_fn) = check_existing_fn(&org_id, &func.name).await {
         Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
             StatusCode::BAD_REQUEST.into(),
             FN_ALREADY_EXIST.to_string(),
         )))
     } else {
+        // 0 代表是 vrl函数
         if func.trans_type.unwrap() == 0 {
+            // 编译检测语法
             match compile_vrl_function(func.function.as_str(), &org_id) {
                 Ok(_) => {}
                 Err(error) => {
@@ -72,6 +76,7 @@ pub async fn save_function(org_id: String, mut func: Transform) -> Result<HttpRe
     }
 }
 
+// 更新某个函数
 #[tracing::instrument(skip(func))]
 pub async fn update_function(
     org_id: String,
@@ -87,11 +92,14 @@ pub async fn update_function(
             )));
         }
     };
+
+    // 代表前后没有变化
     if func == existing_fn {
         return Ok(HttpResponse::Ok().json(func));
     }
 
     // UI mostly like in 1st version wont send streams, so we need to add them back from existing function
+    // 目前应该是无法从UI中直接设置stream的 所以stream要保留
     func.streams = existing_fn.streams;
 
     if func.trans_type.unwrap() == 0 {
@@ -135,12 +143,15 @@ pub async fn delete_function(org_id: String, fn_name: String) -> Result<HttpResp
     let existing_fn = match check_existing_fn(&org_id, &fn_name).await {
         Some(function) => function,
         None => {
+            // 未找到会返回 错误
             return Ok(HttpResponse::NotFound().json(MetaHttpResponse::error(
                 StatusCode::NOT_FOUND.into(),
                 FN_NOT_FOUND.to_string(),
             )));
         }
     };
+
+    // 如果fun关联的stream 就无法直接删除了
     if let Some(val) = existing_fn.streams {
         if !val.is_empty() {
             let names = val
@@ -167,6 +178,7 @@ pub async fn delete_function(org_id: String, fn_name: String) -> Result<HttpResp
     }
 }
 
+// 查询流相关的规则
 #[tracing::instrument]
 pub async fn list_stream_functions(
     org_id: String,
@@ -181,6 +193,7 @@ pub async fn list_stream_functions(
     }
 }
 
+// 删除某个stream相关的函数
 #[tracing::instrument]
 pub async fn delete_stream_function(
     org_id: String,
@@ -199,6 +212,7 @@ pub async fn delete_stream_function(
     };
 
     if let Some(val) = existing_fn.streams {
+        // 去掉stream
         if val.len() == 1 && val.first().unwrap().stream == stream_name {
             existing_fn.streams = None;
         } else {
@@ -208,6 +222,7 @@ pub async fn delete_stream_function(
                     .collect::<Vec<StreamOrder>>(),
             );
         }
+        // 更新fun
         if let Err(error) = db::functions::set(&org_id, &fn_name, existing_fn).await {
             Ok(
                 HttpResponse::InternalServerError().json(MetaHttpResponse::message(
@@ -218,6 +233,7 @@ pub async fn delete_stream_function(
         } else {
             // cant be removed from watcher of function as stream name & type wont be available , hence being removed here
             let key = format!("{}/{}/{}", org_id, stream_type, stream_name);
+            // 从缓存移除
             remove_stream_fn_from_cache(key, fn_name);
             Ok(HttpResponse::Ok().json(MetaHttpResponse::message(
                 http::StatusCode::OK.into(),
@@ -225,6 +241,7 @@ pub async fn delete_stream_function(
             )))
         }
     } else {
+        // 因为该函数并没有关联目标stream  所以未找到
         Ok(HttpResponse::NotFound().json(MetaHttpResponse::error(
             StatusCode::NOT_FOUND.into(),
             FN_NOT_FOUND.to_string(),
@@ -232,6 +249,7 @@ pub async fn delete_stream_function(
     }
 }
 
+// 将函数关联到某个stream上
 #[tracing::instrument]
 pub async fn add_function_to_stream(
     org_id: String,
@@ -253,6 +271,7 @@ pub async fn add_function_to_stream(
     stream_order.stream = stream_name;
     stream_order.stream_type = stream_type;
 
+    // 将stream关联到函数上
     if let Some(mut val) = existing_fn.streams {
         val.push(stream_order);
         existing_fn.streams = Some(val);
@@ -260,6 +279,7 @@ pub async fn add_function_to_stream(
         existing_fn.streams = Some(vec![stream_order]);
     }
 
+    // 更新db
     if let Err(error) = db::functions::set(&org_id, &fn_name, existing_fn).await {
         Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::message(
@@ -276,6 +296,7 @@ pub async fn add_function_to_stream(
 }
 
 fn extract_num_args(func: &mut Transform) {
+    // TODO 忽略 lua
     if func.trans_type.unwrap() == 1 {
         let src: String = func.function.to_owned();
         let start_stream = src.find('(').unwrap();
@@ -287,6 +308,7 @@ fn extract_num_args(func: &mut Transform) {
             func.num_args = args.split(',').collect::<Vec<&str>>().len() as u8;
         }
     } else {
+        // 查看有几个参数
         let params = func.params.to_owned();
         func.num_args = params.split(',').collect::<Vec<&str>>().len() as u8;
     }

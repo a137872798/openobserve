@@ -28,7 +28,7 @@ pub struct Transform {
     pub function: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
+    #[serde(default)]  // 参数列表 , 拼接
     pub params: String,
     #[serde(default)]
     pub num_args: u8,

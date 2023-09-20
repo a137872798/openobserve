@@ -20,6 +20,7 @@ use crate::common::meta::alert::AlertDestination;
 use crate::common::meta::http::HttpResponse as MetaHttpResponse;
 use crate::service::db;
 
+// 保存目的地
 #[tracing::instrument(skip(destination))]
 pub async fn save_destination(
     org_id: String,
@@ -44,8 +45,11 @@ pub async fn list_destinations(org_id: String) -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(list))
 }
 
+// 删除目的地  不会删除模版
 #[tracing::instrument]
 pub async fn delete_destination(org_id: String, name: String) -> Result<HttpResponse, Error> {
+
+    // 表示目的地还在被使用中 不能删除
     for alert_list in STREAM_ALERTS.iter() {
         for alert in alert_list.value().list.clone() {
             if alert_list.key().starts_with(&org_id) && alert.destination.eq(&name) {

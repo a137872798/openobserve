@@ -18,6 +18,7 @@ use crate::common::meta::alert::{self, Alert};
 use crate::common::utils::json::{self, Value};
 use crate::service::db;
 
+// 发送告警通知
 pub async fn send_notification(
     alert: &Alert,
     trigger: &alert::Trigger,

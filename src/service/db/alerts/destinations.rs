@@ -79,6 +79,7 @@ pub async fn list(org_id: &str) -> Result<Vec<AlertDestinationResponse>, anyhow:
     let mut temp_list: Vec<AlertDestinationResponse> = Vec::new();
     for item_value in db.list_values(&key).await? {
         let dest: AlertDestination = json::from_slice(&item_value).unwrap();
+        // 目的地还要关联查询出 模版
         let template = db::alerts::templates::get(org_id, &dest.template).await?;
         temp_list.push(dest.to_dest_resp(template))
     }
