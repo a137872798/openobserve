@@ -119,7 +119,7 @@ pub trait Db: Sync + Send + 'static {
     async fn watch(&self, prefix: &str) -> Result<Arc<mpsc::Receiver<Event>>>;
 }
 
-pub(crate) fn parse_key(mut key: &str) -> (String, String, String) {
+pub fn parse_key(mut key: &str) -> (String, String, String) {
     let mut module = "".to_string();
     let mut key1 = "".to_string();
     let mut key2 = "".to_string();
@@ -153,14 +153,14 @@ pub(crate) fn parse_key(mut key: &str) -> (String, String, String) {
     (module, key1, key2)
 }
 
-pub(crate) fn build_key(module: &str, key1: &str, key2: &str) -> String {
+pub fn build_key(module: &str, key1: &str, key2: &str) -> String {
     if key1.is_empty() {
-        return module.to_string();
+        format!("/{module}/")
+    } else if key2.is_empty() {
+        format!("/{module}/{key1}")
+    } else {
+        format!("/{module}/{key1}/{key2}")
     }
-    if key2.is_empty() {
-        return format!("/{}/{}", module, key1);
-    }
-    format!("/{}/{}/{}", module, key1, key2)
 }
 
 #[derive(Debug, Default)]
@@ -200,7 +200,7 @@ mod tests {
     async fn test_put() {
         create_table().await.unwrap();
         let db = default();
-        db.put("/foo/bar", Bytes::from("hello"), false)
+        db.put("/foo/put/bar", Bytes::from("hello"), false)
             .await
             .unwrap();
     }
@@ -211,8 +211,8 @@ mod tests {
         let db = default();
         let hello = Bytes::from("hello");
 
-        db.put("/foo/bar", hello.clone(), false).await.unwrap();
-        assert_eq!(db.get("/foo/bar").await.unwrap(), hello);
+        db.put("/foo/get/bar", hello.clone(), false).await.unwrap();
+        assert_eq!(db.get("/foo/get/bar").await.unwrap(), hello);
     }
 
     #[actix_web::test]
@@ -221,17 +221,17 @@ mod tests {
         let db = default();
         let hello = Bytes::from("hello");
 
-        db.put("/foo/bar1", hello.clone(), false).await.unwrap();
-        db.put("/foo/bar2", hello.clone(), false).await.unwrap();
-        db.put("/foo/bar3", hello.clone(), false).await.unwrap();
-        db.delete("/foo/bar1", false, false).await.unwrap();
-        assert!(db.delete("/foo/bar4", false, false).await.is_ok());
-        db.delete("/foo/", true, false).await.unwrap();
+        db.put("/foo/del/bar1", hello.clone(), false).await.unwrap();
+        db.put("/foo/del/bar2", hello.clone(), false).await.unwrap();
+        db.put("/foo/del/bar3", hello.clone(), false).await.unwrap();
+        db.delete("/foo/del/bar1", false, false).await.unwrap();
+        assert!(db.delete("/foo/del/bar4", false, false).await.is_ok());
+        db.delete("/foo/del/", true, false).await.unwrap();
 
-        db.put("/foo/bar1", hello.clone(), false).await.unwrap();
-        db.put("/foo/bar2", hello.clone(), false).await.unwrap();
-        db.put("/foo/bar3", hello, false).await.unwrap();
-        assert_eq!(db.list_keys("/foo/").await.unwrap().len(), 3);
-        assert_eq!(db.list_values("/foo/").await.unwrap().len(), 3);
+        db.put("/foo/del/bar1", hello.clone(), false).await.unwrap();
+        db.put("/foo/del/bar2", hello.clone(), false).await.unwrap();
+        db.put("/foo/del/bar3", hello, false).await.unwrap();
+        assert_eq!(db.list_keys("/foo/del/").await.unwrap().len(), 3);
+        assert_eq!(db.list_values("/foo/del/").await.unwrap().len(), 3);
     }
 }

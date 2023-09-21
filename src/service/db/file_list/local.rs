@@ -53,16 +53,12 @@ pub async fn set(key: &str, meta: FileMeta, deleted: bool) -> Result<(), anyhow:
     // 准备将这些数据文件信息写入到一个文件中
     let file = wal::get_or_create(
         0,
-        StreamParams {
-            org_id: "",
-            stream_name: "",
-            stream_type: StreamType::Filelist,
-        },
+        StreamParams::new("", "", StreamType::Filelist),
         None,
         &date_key,
-        false,  // 使用FS
-    );
-    file.write(write_buf.as_ref());
+        false,
+    ).await;
+    file.write(write_buf.as_ref()).await;
 
     // notifiy other nodes     因为每个节点如果只是将file_list更新到本地  那么其他节点将无法观测到新的数据文件 所以还需要通知其他节点
     tokio::task::spawn(async move { super::broadcast::send(&[file_data], None).await });

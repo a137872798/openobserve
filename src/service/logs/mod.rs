@@ -32,14 +32,15 @@ use crate::common::{
 };
 use crate::service::schema::check_for_schema;
 
-use super::ingestion::get_wal_time_key;
+use super::ingestion::{get_value, get_wal_time_key};
 
 pub mod bulk;
 pub mod gcs_pub_sub;
 pub mod json;
-pub mod json_no_fn;
 pub mod kinesis_firehose;
 pub mod multi;
+pub mod otlp_grpc;
+pub mod otlp_http;
 pub mod syslog;
 
 static BULK_OPERATORS: [&str; 3] = ["create", "index", "update"];
@@ -215,24 +216,6 @@ pub fn cast_to_type(mut value: Value, delta: Vec<Field>) -> (Option<String>, Opt
     }
 }
 
-// 将数据转换成string类型
-pub fn get_value(value: &Value) -> String {
-    if value.is_boolean() {
-        value.as_bool().unwrap().to_string()
-    } else if value.is_f64() {
-        value.as_f64().unwrap().to_string()
-    } else if value.is_i64() {
-        value.as_i64().unwrap().to_string()
-    } else if value.is_u64() {
-        value.as_u64().unwrap().to_string()
-    } else if value.is_string() {
-        value.as_str().unwrap().to_string()
-    } else {
-        "".to_string()
-    }
-}
-
-// 将local_val处理后写入buf
 async fn add_valid_record(
     stream_meta: StreamMeta,   // 该对象描述了 stream的基本信息 以及分区键
     stream_schema_map: &mut AHashMap<String, Schema>,  // 维护所有stream的schema信息

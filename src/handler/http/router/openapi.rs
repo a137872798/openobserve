@@ -15,7 +15,7 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use crate::common::meta;
+use crate::common::{infra::config::CONFIG, meta};
 use crate::handler::http::request;
 
 #[derive(OpenApi)]
@@ -104,15 +104,15 @@ use crate::handler::http::request;
             meta::ingestion::KFHRecordRequest,
             meta::ingestion::StreamStatus,
             meta::ingestion::IngestionResponse,
-            meta::dashboards::AggregationFunc,
-            meta::dashboards::AxisItem,
             meta::dashboards::Dashboard,
             meta::dashboards::Dashboards,
-            meta::dashboards::Layout,
-            meta::dashboards::Panel,
-            meta::dashboards::PanelConfig,
-            meta::dashboards::PanelFields,
-            meta::dashboards::PanelFilter,
+            meta::dashboards::v1::AxisItem,
+            meta::dashboards::v1::Dashboard,
+            meta::dashboards::v1::Layout,
+            meta::dashboards::v1::Panel,
+            meta::dashboards::v1::PanelConfig,
+            meta::dashboards::v1::PanelFields,
+            meta::dashboards::v1::PanelFilter,
             meta::search::Query,
             meta::search::Request,
             meta::search::RequestEncoding,
@@ -184,6 +184,9 @@ pub struct SecurityAddon;
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if !CONFIG.common.base_uri.is_empty() {
+            openapi.servers = Some(vec![utoipa::openapi::Server::new(&CONFIG.common.base_uri)]);
+        }
         let components = openapi.components.as_mut().unwrap();
         components.add_security_scheme(
             "Authorization",

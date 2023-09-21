@@ -15,9 +15,11 @@
 use std::{fs, path::Path};
 use tokio::time;
 
-use crate::common::infra::{cluster, config::CONFIG, storage, wal};
-use crate::common::meta::StreamType;
-use crate::common::utils::file::scan_files;
+use crate::common::{
+    infra::{cluster, config::CONFIG, storage, wal},
+    meta::{stream::StreamParams, StreamType},
+    utils::file::scan_files,
+};
 use crate::service::db;
 
 // 随着 file后台任务的运行  file_list会始终保持最新以及在集群间同步     而file_list的后台任务则是负责将file_list推送到 远端仓库
@@ -43,7 +45,7 @@ pub async fn run_move_file_to_s3() -> Result<(), anyhow::Error> {
     interval.tick().await; // trigger the first run
     loop {
         interval.tick().await;
-        if let Err(e) = move_file_list_to_storage().await {
+        if let Err(e) = move_file_list_to_storage(true).await {
             log::error!("Error moving file_list to remote: {}", e);
         }
     }
@@ -54,7 +56,7 @@ pub async fn run_move_file_to_s3() -> Result<(), anyhow::Error> {
  * 将file_list 推送到storage    记得在file的后台任务中会看到被上传的文件会写入一个 streamType为fileList的 wal
  * 注意该wal只有fs类型
  */
-async fn move_file_list_to_storage() -> Result<(), anyhow::Error> {
+pub async fn move_file_list_to_storage(check_in_use: bool) -> Result<(), anyhow::Error> {
     let data_dir = Path::new(&CONFIG.common.data_wal_dir)
         .canonicalize()
         .unwrap();
@@ -83,9 +85,10 @@ async fn move_file_list_to_storage() -> Result<(), anyhow::Error> {
             file_name = file_name.replace('_', "/");
         }
 
-        // check the file is using for write   跳过还在写入的wal文件
-        if wal::check_in_use("", "", StreamType::Filelist, &file_name) {
-            continue;
+        // check the file is using for write
+        if check_in_use
+            && wal::check_in_use(StreamParams::new("", "", StreamType::Filelist), &file_name).await
+        {    continue;
         }
         log::info!("[JOB] convert file_list: {}", file);
 

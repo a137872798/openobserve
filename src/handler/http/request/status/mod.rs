@@ -19,13 +19,11 @@ use serde::Serialize;
 use std::io::Error;
 use utoipa::ToSchema;
 
-use crate::common::infra::{
-    cache, cluster,
-    config::{self, CONFIG, INSTANCE_ID, SYSLOG_ENABLED},
-    file_list,
+use crate::common::{
+    infra::{cache, cluster, config::*, file_list},
+    meta::functions::ZoFunction,
+    utils::json,
 };
-use crate::common::meta::functions::ZoFunction;
-use crate::common::utils::json;
 use crate::service::{db, search::datafusion::DEFAULT_FUNCTIONS};
 
 // 描述服务的健康状态
@@ -69,13 +67,13 @@ pub async fn healthz() -> Result<HttpResponse, Error> {
 #[get("")]
 pub async fn zo_config() -> Result<HttpResponse, Error> {  // 获取某些可展示的配置项
     Ok(HttpResponse::Ok().json(ConfigResponse {
-        version: config::VERSION.to_string(),
+        version: VERSION.to_string(),
         instance: INSTANCE_ID.get("instance_id").unwrap().to_string(),
-        commit_hash: config::COMMIT_HASH.to_string(),
-        build_date: config::BUILD_DATE.to_string(),
-        functions_enabled: config::HAS_FUNCTIONS,
+        commit_hash: COMMIT_HASH.to_string(),
+        build_date: BUILD_DATE.to_string(),
+        functions_enabled: HAS_FUNCTIONS,
         telemetry_enabled: CONFIG.common.telemetry_enabled,
-        default_fts_keys: crate::common::utils::stream::SQL_FULL_TEXT_SEARCH_FIELDS
+        default_fts_keys: SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA
             .iter()
             .map(|s| s.to_string())
             .collect(),
@@ -95,14 +93,10 @@ pub async fn cache_status() -> Result<HttpResponse, Error> {
         "LOCAL_NODE_UUID",
         json::json!(cluster::LOCAL_NODE_UUID.clone()),
     );
-    stats.insert(
-        "LOCAL_NODE_NAME",
-        json::json!(&config::CONFIG.common.instance_name),
-    );
-    stats.insert(
-        "LOCAL_NODE_ROLE",
-        json::json!(&config::CONFIG.common.node_role),
-    );
+    stats.insert("LOCAL_NODE_NAME", json::json!(&CONFIG.common.instance_name));
+    stats.insert("LOCAL_NODE_ROLE", json::json!(&CONFIG.common.node_role));
+    let nodes = cluster::get_cached_online_nodes();
+    stats.insert("NODE_LIST", json::json!(nodes));
 
     let (stream_num, stream_schema_num, mem_size) = get_stream_schema_status();
     stats.insert("STREAM_SCHEMA", json::json!({"stream_num": stream_num,"stream_schema_num": stream_schema_num, "mem_size": mem_size}));
@@ -114,11 +108,16 @@ pub async fn cache_status() -> Result<HttpResponse, Error> {
         json::json!({"stream_num": stream_num, "mem_size": mem_size}),
     );
 
-    let file_num = cache::file_data::len();
-    let (max_size, cur_size) = cache::file_data::stats();
+    let mem_file_num = cache::file_data::memory::len().await;
+    let (mem_max_size, mem_cur_size) = cache::file_data::memory::stats().await;
+    let disk_file_num = cache::file_data::disk::len().await;
+    let (disk_max_size, disk_cur_size) = cache::file_data::disk::stats().await;
     stats.insert(
         "FILE_DATA",
-        json::json!({"cache_files":file_num, "memory_limit":max_size,"mem_size": cur_size}),
+        json::json!({
+            "memory":{"cache_files":mem_file_num, "cache_limit":mem_max_size,"cache_bytes": mem_cur_size},
+            "disk":{"cache_files":disk_file_num, "cache_limit":disk_max_size,"cache_bytes": disk_cur_size}
+        }),
     );
 
     let file_list_num = file_list::len().await;
@@ -141,7 +140,7 @@ fn get_stream_schema_status() -> (usize, usize, usize) {
     let mut stream_num = 0;
     let mut stream_schema_num = 0;
     let mut mem_size = 0;
-    for item in config::STREAM_SCHEMAS.iter() {
+    for item in STREAM_SCHEMAS.iter() {
         stream_num += 1;
         mem_size += std::mem::size_of::<Vec<Schema>>();
         mem_size += item.key().len();

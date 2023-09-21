@@ -58,6 +58,7 @@ pub async fn handle_trace_request(
     thread_id: usize,
     request: ExportTraceServiceRequest,
     is_grpc: bool,
+    in_stream_name: Option<&str>,
 ) -> Result<HttpResponse, Error> {
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(
@@ -75,7 +76,14 @@ pub async fn handle_trace_request(
         )));
     }
     let start = std::time::Instant::now();
-    let traces_stream_name = "default";
+
+    let traces_stream_name = match in_stream_name {
+        Some(name) => format_stream_name(name),
+        None => "default".to_owned(),
+    };
+
+    let traces_stream_name = &traces_stream_name;
+
     let mut trace_meta_coll: AHashMap<String, Vec<json::Map<String, json::Value>>> =
         AHashMap::new();
     let mut traces_schema_map: AHashMap<String, Schema> = AHashMap::new();
@@ -134,7 +142,7 @@ pub async fn handle_trace_request(
                 );
             }
         }
-        let inst_resources = res_span.instrumentation_library_spans;
+        let inst_resources = res_span.scope_spans;
         for inst_span in inst_resources {
             let spans = inst_span.spans;
             for span in spans {
@@ -197,7 +205,7 @@ pub async fn handle_trace_request(
                     operation_name: span.name.clone(),
                     start_time,
                     end_time,
-                    duration: (end_time - start_time) / 1000000,
+                    duration: (end_time - start_time) / 1000, // microseconds
                     reference: span_ref,
                     service_name: service_name.clone(),
                     attributes: span_att_map,
@@ -287,21 +295,18 @@ pub async fn handle_trace_request(
     let mut req_stats = write_file(
         data_buf,
         thread_id,
-        StreamParams {
-            org_id,
-            stream_name: traces_stream_name,
-            stream_type: StreamType::Traces,
-        },
+        StreamParams::new(org_id, traces_stream_name, StreamType::Traces),
         &mut traces_file_name,
         None,
-    );
+    )
+    .await;
     let time = start.elapsed().as_secs_f64();
     req_stats.response_time = time;
 
     let ep = if is_grpc {
         "grpc/export/traces"
     } else {
-        "/api/org/traces"
+        "http-proto/api/org/traces/"
     };
     metrics::HTTP_RESPONSE_TIME
         .with_label_values(&[
@@ -379,7 +384,9 @@ pub async fn handle_trace_request(
         }
     }
 
-    let res = ExportTraceServiceResponse {};
+    let res = ExportTraceServiceResponse {
+        partial_success: None,
+    };
     let mut out = BytesMut::with_capacity(res.encoded_len());
     res.encode(&mut out).expect("Out of memory");
 

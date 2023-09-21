@@ -26,11 +26,12 @@ use crate::common::{
         config::{COLUMN_TRACE_ID, CONFIG},
         metrics, storage, wal,
     },
-    meta::{common::FileMeta, StreamType},
+    meta::{common::FileMeta, stream::StreamParams, StreamType},
     utils::{file::scan_files, json, stream::populate_file_meta},
 };
 use crate::service::{
-    db, schema::schema_evolution, search::datafusion::new_writer, usage::report_compression_stats,
+    db, schema::schema_evolution, search::datafusion::new_parquet_writer,
+    usage::report_compression_stats,
 };
 
 /**
@@ -53,6 +54,7 @@ pub async fn () -> Result<(), anyhow::Error> {
  */
 async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     // 找到数据文件目录
+pub async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     let wal_dir = Path::new(&CONFIG.common.data_wal_dir)
         .canonicalize()
         .unwrap();
@@ -95,6 +97,13 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
 
         // check the file is using for write  定期搬运 但是要跳过还在写入的文件
         if wal::check_in_use(&org_id, &stream_name, stream_type, &file_name) {
+        // check the file is using for write
+        if wal::check_in_use(
+            StreamParams::new(&org_id, &stream_name, stream_type),
+            &file_name,
+        )
+        .await
+        {
             // println!("file is using for write, skip, {}", file_name);
             continue;
         }
@@ -271,6 +280,7 @@ async fn upload_file(
     let mut writer = new_writer(&mut buf_parquet, &arrow_schema, None, bf_fields);
 
     // 这是正常情况 代表json格式是有效的  往OO中写入的数据文件 基本都是json格式   arrow-json包具备 json<->arrow之间的转换能力
+    let mut batches = vec![];
     if res_records.is_empty() {
         file.seek(SeekFrom::Start(0)).unwrap();
         let json_reader = BufReader::new(&file);
@@ -281,39 +291,55 @@ async fn upload_file(
         // RecordBatch对应一批数据(多行数据)  然后每行包含多列
         for batch in json {
             let batch_write = batch.unwrap();
-            writer.write(&batch_write).expect("Write batch succeeded");
-            meta_batch.push(batch_write);
+            batches.push(batch_write);
         }
     } else {
         // TODO
         let mut json = vec![];
         let mut decoder = ReaderBuilder::new(arrow_schema.clone()).build_decoder()?;
-
         for value in res_records {
             decoder
                 .decode(json::to_string(&value).unwrap().as_bytes())
                 .unwrap();
             json.push(decoder.flush()?.unwrap());
         }
-
         for batch in json {
-            writer.write(&batch).expect("Write batch succeeded");
-            meta_batch.push(batch);
+            batches.push(batch);
         }
     };
-    writer.close().unwrap();
 
-    //let file_name = path.file_name();
+    // write metadata
     let mut file_meta = FileMeta {
         min_ts: 0,
         max_ts: 0,
         records: 0,
         original_size: file_size as i64,
         compressed_size: buf_parquet.len() as i64,  // 写入的数据会存储在该容器中  并且在按照parquet写入时 会针对同列自动压缩
+        compressed_size: 0,
     };
+    populate_file_meta(arrow_schema.clone(), vec![batches.to_vec()], &mut file_meta).await?;
 
     // 填充文件元数据
     populate_file_meta(arrow_schema.clone(), vec![meta_batch], &mut file_meta).await?;
+    // write parquet file
+    let mut buf_parquet = Vec::new();
+    let bf_fields =
+        if CONFIG.common.traces_bloom_filter_enabled && stream_type == StreamType::Traces {
+            Some(vec![COLUMN_TRACE_ID])
+        } else {
+            None
+        };
+    let mut writer = new_parquet_writer(
+        &mut buf_parquet,
+        &arrow_schema,
+        file_meta.records as u64,
+        bf_fields,
+    );
+    for batch in batches {
+        writer.write(&batch)?;
+    }
+    writer.close()?;
+    file_meta.compressed_size = buf_parquet.len() as i64;
 
     // 检查schema是否发生变化  并在合并后写入DB
     schema_evolution(

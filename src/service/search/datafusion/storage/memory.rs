@@ -16,7 +16,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream::BoxStream, StreamExt};
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, Result,
+    path::Path, GetOptions, GetResult, GetResultPayload, ListResult, MultipartId, ObjectMeta,
+    ObjectStore, Result,
 };
 use std::ops::Range;
 use tokio::io::AsyncWrite;
@@ -24,12 +25,12 @@ use tokio::io::AsyncWrite;
 use crate::common::infra::{cache::file_data, storage};
 use crate::common::utils::time::BASE_TIME;
 
-/// fsm: File system with memory cache
+/// File system with memory cache
 #[derive(Debug, Default)]
 pub struct FS {}
 
 impl FS {
-    /// Create new in-memory storage.
+    /// Create new memory storage.
     pub fn new() -> Self {
         Self::default()
     }
@@ -46,7 +47,7 @@ impl FS {
     // 从内存中获取数据
     async fn get_cache(&self, location: &Path) -> Option<Bytes> {
         let path = location.to_string();
-        let data = file_data::get(&path);
+        let data = file_data::memory::get(&path).await;
         tokio::task::yield_now().await;
         data
     }
@@ -54,7 +55,7 @@ impl FS {
 
 impl std::fmt::Display for FS {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FsMemory")
+        write!(f, "Memory")
     }
 }
 
@@ -64,105 +65,136 @@ impl ObjectStore for FS {
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
         let location = &self.format_location(location);
-        let data = match self.get_cache(location).await {
-            Some(data) => data,
-            // 不能通过缓存的时候 直接访问ObjectStore上的文件
-            None => return storage::DEFAULT.get(location).await,
-        };
-        Ok(GetResult::Stream(
-            futures::stream::once(async move { Ok(data) }).boxed(),
-        ))
+        match self.get_cache(location).await {
+            Some(data) => {
+                let meta = ObjectMeta {
+                    location: location.clone(),
+                    last_modified: *BASE_TIME,
+                    size: data.len(),
+                    e_tag: None,
+                };
+                let range = Range {
+                    start: 0,
+                    end: data.len(),
+                };
+                Ok(GetResult {
+                    payload: GetResultPayload::Stream(
+                        futures::stream::once(async move { Ok(data) }).boxed(),
+                    ),
+                    meta,
+                    range,
+                })
+            }
+            None => match storage::LOCAL_CACHE.get(location).await {
+                Ok(data) => Ok(data),
+                Err(_) => storage::DEFAULT.get(location).await,
+            },
+        }
     }
 
     // 该方法区别就是额外支持一些参数
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let location = &self.format_location(location);
-        let data = match self.get_cache(location).await {
-            Some(data) => data,
-            None => return storage::DEFAULT.get_opts(location, options).await,
-        };
-        Ok(GetResult::Stream(
-            futures::stream::once(async move { Ok(data) }).boxed(),
-        ))
+        match self.get_cache(location).await {
+            Some(data) => {
+                let meta = ObjectMeta {
+                    location: location.clone(),
+                    last_modified: *BASE_TIME,
+                    size: data.len(),
+                    e_tag: None,
+                };
+                let (range, data) = match options.range {
+                    Some(range) => (range.clone(), data.slice(range)),
+                    None => (0..data.len(), data),
+                };
+                Ok(GetResult {
+                    payload: GetResultPayload::Stream(
+                        futures::stream::once(async move { Ok(data) }).boxed(),
+                    ),
+                    meta,
+                    range,
+                })
+            }
+            None => match storage::LOCAL_CACHE
+                .get_opts(
+                    location,
+                    GetOptions {
+                        range: options.range.clone(),
+                        if_modified_since: options.if_modified_since,
+                        if_unmodified_since: options.if_unmodified_since,
+                        if_match: options.if_match.clone(),
+                        if_none_match: options.if_none_match.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(ret) => Ok(ret),
+                Err(_) => storage::DEFAULT.get_opts(location, options).await,
+            },
+        }
     }
 
     // 根据范围查询数据   这个range是bytes的范围
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
         let location = &self.format_location(location);
-        let data = match self.get_cache(location).await {
-            Some(data) => data,
-            None => return storage::DEFAULT.get_range(location, range).await,
-        };
-
-        // end 不能超过length
-        if range.end > data.len() {
-            let file = location.to_string();
-            let file_meta = crate::service::file_list::get_file_meta(&file)
+        match self.get_cache(location).await {
+            Some(data) => {
+                if range.end > data.len() {
+                    return Err(super::Error::OutOfRange(location.to_string()).into());
+                }
+                if range.start > range.end {
+                    return Err(super::Error::BadRange(location.to_string()).into());
+                }
+                Ok(data.slice(range))
+            }
+            None => match storage::LOCAL_CACHE
+                .get_range(location, range.clone())
                 .await
-                .expect("file meta must have value");
-            log::error!(
-                "get_range: OutOfRange, file: {:?}, meta: {:?}, range.end {} > data.len() {}",
-                file,
-                file_meta,
-                range.end,
-                data.len()
-            );
-            return Err(super::Error::OutOfRange(location.to_string()).into());
+            {
+                Ok(data) => Ok(data),
+                Err(_) => storage::DEFAULT.get_range(location, range).await,
+            },
         }
-        if range.start > range.end {
-            return Err(super::Error::BadRange(location.to_string()).into());
-        }
-        Ok(data.slice(range))
     }
 
     // 返回多个范围
     async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> Result<Vec<Bytes>> {
         let location = &self.format_location(location);
-
-        // 同上先走缓存 然后直接走ObjectStore
-        let data = match self.get_cache(location).await {
-            Some(data) => data,
-            None => return storage::DEFAULT.get_ranges(location, ranges).await,
-        };
-        let mut data_slices = Vec::with_capacity(ranges.len());
-        for range in ranges.iter() {
-
-            // 范围的声明不应该超过总长度
-            if range.end > data.len() {
-                let file = location.to_string();
-                let file_meta = crate::service::file_list::get_file_meta(&file)
-                    .await
-                    .expect("file meta must have value");
-                log::error!(
-                    "get_ranges: OutOfRange, file: {:?}, meta: {:?}, range.end {} > data.len() {}",
-                    file,
-                    file_meta,
-                    range.end,
-                    data.len()
-                );
-                return Err(super::Error::OutOfRange(location.to_string()).into());
-            }
-            if range.start > range.end {
-                return Err(super::Error::BadRange(location.to_string()).into());
-            }
-            data_slices.push(data.slice(range.clone()));
+        match self.get_cache(location).await {
+            Some(data) => ranges
+                .iter()
+                .map(|range| {
+                    if range.end > data.len() {
+                        return Err(super::Error::OutOfRange(location.to_string()).into());
+                    }
+                    if range.start > range.end {
+                        return Err(super::Error::BadRange(location.to_string()).into());
+                    }
+                    Ok(data.slice(range.clone()))
+                })
+                .collect(),
+            None => match storage::LOCAL_CACHE.get_ranges(location, ranges).await {
+                Ok(data) => Ok(data),
+                Err(_) => storage::DEFAULT.get_ranges(location, ranges).await,
+            },
         }
-        Ok(data_slices)
     }
 
     // 获取元数据
     async fn head(&self, location: &Path) -> Result<ObjectMeta> {
         let location = &self.format_location(location);
-        let data = match self.get_cache(location).await {
-            Some(data) => data,
-            None => return storage::DEFAULT.head(location).await,
-        };
-        Ok(ObjectMeta {
-            location: location.clone(),
-            last_modified: *BASE_TIME,
-            size: data.len(),
-            e_tag: None,
-        })
+        match self.get_cache(location).await {
+            Some(data) => Ok(ObjectMeta {
+                location: location.clone(),
+                last_modified: *BASE_TIME,
+                size: data.len(),
+                e_tag: None,
+            }),
+            None => match storage::LOCAL_CACHE.head(location).await {
+                Ok(data) => Ok(data),
+                Err(_) => storage::DEFAULT.head(location).await,
+            },
+        }
     }
 
     //

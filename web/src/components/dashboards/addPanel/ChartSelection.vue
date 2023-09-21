@@ -30,7 +30,7 @@
           v-ripple
           @click="$emit('update:selectedChartType', item.id)"
         >
-          <q-item-section class="">
+          <q-item-section :data-test="`selected-chart-${item.id}-item`" class="">
             <q-icon
               size="sm"
               color="primary"
@@ -86,6 +86,11 @@ export default defineComponent({
         image: "img:" + getImageURL("images/dashboard/charts/stacked.png"),
         title: "Stacked",
         id: "stacked",
+      },
+      {
+        image: "img:" + getImageURL("images/dashboard/charts/heatmap.png"),
+        title: "Heatmap",
+        id: "heatmap",
       },
       {
         image: "img:" + getImageURL("images/dashboard/charts/h-stacked.png"),

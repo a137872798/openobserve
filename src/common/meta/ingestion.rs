@@ -75,7 +75,7 @@ pub struct StreamSchemaChk {
     pub has_metadata: bool,  // 只要元数据中有 METADATA_LABEL 为key的数据 就为true
 }
 
-pub const INGESTION_EP: [&str; 11] = [
+pub const INGESTION_EP: [&str; 13] = [
     "_bulk",
     "_json",
     "_multi",
@@ -87,6 +87,8 @@ pub const INGESTION_EP: [&str; 11] = [
     "_index_template",
     "_data_stream",
     "_sub",
+    "logs",
+    "metrics",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

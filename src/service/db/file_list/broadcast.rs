@@ -17,11 +17,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tonic::{codec::CompressionEncoding, metadata::MetadataValue, transport::Channel, Request};
 
-use crate::common::infra::cluster::{
-    self, get_cached_nodes, get_internal_grpc_token, get_node_by_uuid,
+use crate::common::{
+    infra::{cluster, config::CONFIG},
+    meta::common::FileKey,
 };
-use crate::common::infra::config::CONFIG;
-use crate::common::meta::common::FileKey;
 use crate::handler::grpc::cluster_rpc;
 
 static EVENTS: Lazy<RwLock<ahash::AHashMap<String, EventChannel>>> =
@@ -40,7 +39,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
 
     // 获得id对应的节点 代表要发送的目标节点 如果本节点上线 就是反馈给集群的其他节点
     let nodes = if node_uuid.is_none() {
-        get_cached_nodes(|node| {
+        cluster::get_cached_nodes(|node| {
             (node.status == cluster::NodeStatus::Prepare
                 || node.status == cluster::NodeStatus::Online)
                 // 有些节点负责压缩有些节点负责查询 反正是需要数据的节点
@@ -50,6 +49,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
     } else {
         // 也可以只通知一个节点
         get_node_by_uuid(&node_uuid.unwrap())
+        cluster::get_node_by_uuid(&node_uuid.unwrap())
             .map(|node| vec![node])
             .unwrap_or_default()
     };
@@ -67,6 +67,16 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
             continue;
         }
         let node_id = node.uuid.clone();
+        if CONFIG.common.print_key_event {
+            items.iter().for_each(|item| {
+                log::info!(
+                    "[broadcast] send event to node[{}]: file: {}, deleted: {}",
+                    &node_id,
+                    item.key,
+                    item.deleted,
+                );
+            });
+        }
         // retry 5 times
         let mut ok = false;
 
@@ -81,7 +91,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
                     // 开启一个循环任务 从rx中获取事件并通过grpc服务发送到目标节点上
                     if let Err(e) = send_to_node(node, &mut rx).await {
                         log::error!(
-                            "[broadcast] send event to node[{}] channel closed: {}",
+                            "[broadcast] send event to node[{}] channel failed, channel closed: {}",
                             &node_id,
                             e
                         );
@@ -93,7 +103,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
             if let Err(e) = channel.clone().send(items.to_vec()) {
                 events.remove(&node_id);
                 log::error!(
-                    "[broadcast] send event to node[{}] failed: {}, retrying...",
+                    "[broadcast] send event to node[{}] channel failed, {}, retrying...",
                     node_id,
                     e
                 );
@@ -105,7 +115,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
         }
         if !ok {
             log::error!(
-                "[broadcast] send event to node[{}] failed, dropping event",
+                "[broadcast] send event to node[{}] channel failed, dropping events",
                 node_id
             );
         }
@@ -128,6 +138,10 @@ async fn send_to_node(
             match cluster::get_node_by_uuid(&node.uuid) {
                 None => {
                     EVENTS.write().await.remove(&node.uuid);
+                    log::error!(
+                        "[broadcast] node[{}] leaved cluster, dropping events",
+                        &node.uuid,
+                    );
                     return Ok(());
                 }
                 Some(v) => {
@@ -140,7 +154,7 @@ async fn send_to_node(
             tokio::task::yield_now().await;
         }
         // connect to the node
-        let token: MetadataValue<_> = get_internal_grpc_token()
+        let token: MetadataValue<_> = cluster::get_internal_grpc_token()
             .parse()
             .expect("parse internal grpc token faile");
 
@@ -190,11 +204,12 @@ async fn send_to_node(
             for item in items.iter() {
                 req_query.items.push(cluster_rpc::FileKey::from(item));
             }
-            let mut ttl = 1;
+            let mut wait_ttl = 1;
+            let mut retry_ttl = 0;
             loop {
-                if ttl > 3600 {
+                if retry_ttl >= 1800 {
                     log::error!(
-                        "[broadcast] to node[{}] timeout, dropping event, already retried for 1 hour",
+                        "[broadcast] to node[{}] timeout, dropping event, already retried for 30 minutes",
                         &node.uuid
                     );
                     break;
@@ -205,11 +220,22 @@ async fn send_to_node(
                     Err(e) => {
                         if cluster::get_node_by_uuid(&node.uuid).is_none() {
                             EVENTS.write().await.remove(&node.uuid);
+                            log::error!(
+                                "[broadcast] node[{}] leaved cluster, dropping events",
+                                &node.uuid,
+                            );
                             return Ok(());
                         }
-                        log::error!("[broadcast] to node[{}] error: {}", &node.uuid, e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(ttl)).await;
-                        ttl *= 2;
+                        log::error!(
+                            "[broadcast] send event to node[{}] failed: {}, retrying...",
+                            &node.uuid,
+                            e
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(wait_ttl)).await;
+                        retry_ttl += wait_ttl;
+                        if wait_ttl < 60 {
+                            wait_ttl *= 2
+                        };
                         continue;
                     }
                 }

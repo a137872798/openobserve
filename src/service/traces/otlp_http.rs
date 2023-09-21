@@ -20,25 +20,27 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use std::{fs::OpenOptions, io::Error};
 
-use crate::common::{
-    infra::{cluster, config::CONFIG, metrics},
-    meta::{
-        alert::{Alert, Evaluate, Trigger},
-        http::HttpResponse as MetaHttpResponse,
-        stream::{PartitionTimeLevel, StreamParams},
-        traces::{Event, Span, SpanRefType},
-        usage::UsageType,
-        StreamType,
-    },
-    utils::{flatten, json},
-};
 use crate::service::{
     db, format_partition_key, format_stream_name,
     ingestion::write_file,
-    logs::get_value,
     schema::{add_stream_schema, stream_schema_exists},
     stream::unwrap_partition_time_level,
     usage::report_request_usage_stats,
+};
+use crate::{
+    common::{
+        infra::{cluster, config::CONFIG, metrics},
+        meta::{
+            alert::{Alert, Evaluate, Trigger},
+            http::HttpResponse as MetaHttpResponse,
+            stream::{PartitionTimeLevel, StreamParams},
+            traces::{Event, Span, SpanRefType},
+            usage::UsageType,
+            StreamType,
+        },
+        utils::{flatten, json},
+    },
+    service::ingestion::grpc::get_val_for_attr,
 };
 
 const PARENT_SPAN_ID: &str = "reference.parent_span_id";
@@ -51,15 +53,17 @@ pub async fn traces_proto(
     org_id: &str,
     thread_id: usize,
     body: web::Bytes,
+    in_stream_name: Option<&str>,
 ) -> Result<HttpResponse, Error> {
     let request = ExportTraceServiceRequest::decode(body).expect("Invalid protobuf");
-    super::handle_trace_request(org_id, thread_id, request, false).await
+    super::handle_trace_request(org_id, thread_id, request, false, in_stream_name).await
 }
 
 pub async fn traces_json(
     org_id: &str,
     thread_id: usize,
     body: web::Bytes,
+    in_stream_name: Option<&str>,
 ) -> Result<HttpResponse, Error> {
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(
@@ -78,7 +82,13 @@ pub async fn traces_json(
     }
 
     let start = std::time::Instant::now();
-    let traces_stream_name = "default";
+    let traces_stream_name = match in_stream_name {
+        Some(name) => format_stream_name(name),
+        None => "default".to_owned(),
+    };
+
+    let traces_stream_name = &traces_stream_name;
+
     let mut trace_meta_coll: AHashMap<String, Vec<json::Map<String, json::Value>>> =
         AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
@@ -130,6 +140,7 @@ pub async fn traces_json(
     // End Register Transforms for stream */
 
     let mut service_name: String = traces_stream_name.to_string();
+    //let export_req: ExportTraceServiceRequest = json::from_slice(body.as_ref()).unwrap();
     let body: json::Value = match json::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(e) => {
@@ -269,7 +280,7 @@ pub async fn traces_json(
                         operation_name: span.get("name").unwrap().as_str().unwrap().to_string(),
                         start_time,
                         end_time,
-                        duration: (end_time - start_time) / 1000000,
+                        duration: (end_time - start_time) / 1000, // microseconds
                         reference: span_ref,
                         service_name: service_name.clone(),
                         attributes: span_att_map,
@@ -376,20 +387,17 @@ pub async fn traces_json(
     let mut req_stats = write_file(
         data_buf,
         thread_id,
-        StreamParams {
-            org_id,
-            stream_name: traces_stream_name,
-            stream_type: StreamType::Traces,
-        },
+        StreamParams::new(org_id, traces_stream_name, StreamType::Traces),
         &mut traces_file_name,
         None,
-    );
+    )
+    .await;
     let time = start.elapsed().as_secs_f64();
     req_stats.response_time = time;
 
     metrics::HTTP_RESPONSE_TIME
         .with_label_values(&[
-            "/api/org/traces",
+            "http-json/api/org/traces",
             "200",
             org_id,
             traces_stream_name,
@@ -398,7 +406,7 @@ pub async fn traces_json(
         .observe(time);
     metrics::HTTP_INCOMING_REQUESTS
         .with_label_values(&[
-            "/api/org/traces",
+            "http-json/api/org/traces",
             "200",
             org_id,
             traces_stream_name,
@@ -469,14 +477,6 @@ pub async fn traces_json(
     )))
 
     //Ok(HttpResponse::Ok().into())
-}
-
-fn get_val_for_attr(attr_val: json::Value) -> json::Value {
-    let local_val = attr_val.as_object().unwrap();
-    if let Some((_key, value)) = local_val.into_iter().next() {
-        return serde_json::Value::String(get_value(value));
-    };
-    ().into()
 }
 
 #[cfg(test)]

@@ -35,6 +35,8 @@ pub struct Request {
     pub aggs: HashMap<String, String>,
     #[serde(default)]  // 描述请求是否被编码过
     pub encoding: RequestEncoding,
+    #[serde(default)]
+    pub timeout: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

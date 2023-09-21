@@ -30,7 +30,7 @@ use datafusion::{
     error::{DataFusionError, Result},
     execution::{
         context::SessionConfig,
-        memory_pool::{FairSpillPool, GreedyMemoryPool, MemoryPool},
+        memory_pool::{FairSpillPool, GreedyMemoryPool},
         runtime_env::{RuntimeConfig, RuntimeEnv},
     },
     logical_expr::expr::Alias,
@@ -40,7 +40,7 @@ use datafusion::{
 use once_cell::sync::Lazy;
 use parquet::arrow::ArrowWriter;
 use regex::Regex;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use crate::common::{
     infra::{
@@ -206,7 +206,7 @@ async fn exec_query(
     let mut sql_parts = vec![];
     for fn_name in crate::common::utils::functions::get_all_transform_keys(&sql.org_id).await {
         // 代表使用到了这个函数
-        if sql.origin_sql.contains(&fn_name) {
+        if sql.origin_sql.contains(&format!("{}(", fn_name)) {
             field_fns.push(fn_name.clone());
         }
     }
@@ -524,7 +524,7 @@ pub async fn merge(
     // query data
     let mut ctx = prepare_datafusion_context()?;
     // Configure listing options
-    let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
+    let file_format = ParquetFormat::default();
     let listing_options = ListingOptions::new(Arc::new(file_format))
         .with_file_extension(FileType::PARQUET.get_ext())
         .with_target_partitions(CONFIG.limit.cpu_num);
@@ -856,7 +856,7 @@ pub async fn convert_parquet_file(
     // Configure listing options   这里是指此时文件的内容格式吗
     let listing_options = match file_type {
         FileType::PARQUET => {
-            let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
+            let file_format = ParquetFormat::default();
             ListingOptions::new(Arc::new(file_format))
                 .with_file_extension(FileType::PARQUET.get_ext())
                 .with_target_partitions(CONFIG.limit.cpu_num)
@@ -939,8 +939,9 @@ pub async fn convert_parquet_file(
     // 产生结果集
     let batches = df.collect().await?;
 
-    // 产生一个以arrow格式存储数据的对象 
+    // 产生一个以arrow格式存储数据的对象
     let mut writer = super::new_writer(buf, &schema, None, None);
+    let mut writer = super::new_parquet_writer(buf, &schema, 0, None);
     for batch in batches {
         writer.write(&batch)?;
     }
@@ -970,7 +971,7 @@ pub async fn merge_parquet_files(
     let ctx = SessionContext::with_config_rt(session_config, Arc::new(runtime_env));
 
     // Configure listing options
-    let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
+    let file_format = ParquetFormat::default();
     let listing_options = ListingOptions::new(Arc::new(file_format))
         .with_file_extension(FileType::PARQUET.get_ext())
         .with_target_partitions(CONFIG.limit.cpu_num);
@@ -1026,7 +1027,7 @@ pub async fn merge_parquet_files(
         };
 
     // 因为多个文件的数据已经加载出来了 重新写入其实就是触发了合并
-    let mut writer = super::new_writer(buf, &schema, None, bf_fields);
+    let mut writer = super::new_parquet_writer(buf, &schema, file_meta.records as u64, bf_fields);
     for batch in batches {
         writer.write(&batch)?;
     }
@@ -1062,33 +1063,33 @@ pub fn create_session_config() -> SessionConfig {
 pub fn create_runtime_env() -> Result<RuntimeEnv> {
     let object_store_registry = DefaultObjectStoreRegistry::new();
 
-    let fsm = super::storage::memory::FS::new();
-    let fsm_url = url::Url::parse("fsm:///").unwrap();
-    object_store_registry.register_store(&fsm_url, Arc::new(fsm));
-
-    let fsn = super::storage::nocache::FS::new();
-    let fsn_url = url::Url::parse("fsn:///").unwrap();
-    object_store_registry.register_store(&fsn_url, Arc::new(fsn));
+    let memory = super::storage::memory::FS::new();
+    let memory_url = url::Url::parse("memory:///").unwrap();
+    object_store_registry.register_store(&memory_url, Arc::new(memory));
 
     let tmpfs = super::storage::tmpfs::Tmpfs::new();
     let tmpfs_url = url::Url::parse("tmpfs:///").unwrap();
     object_store_registry.register_store(&tmpfs_url, Arc::new(tmpfs));
 
-    let mem_pool: Arc<dyn MemoryPool> = if CONFIG
-        .memory_cache
-        .datafusion_memory_pool
-        .to_lowercase()
-        .starts_with("greedy")
-    {
-        Arc::new(GreedyMemoryPool::new(
-            CONFIG.memory_cache.datafusion_max_size,
-        ))
+    let rn_config =
+        RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry));
+    let rn_config = if CONFIG.memory_cache.datafusion_max_size > 0 {
+        let mem_pool = super::MemoryPoolType::from_str(&CONFIG.memory_cache.datafusion_memory_pool)
+            .map_err(|e| {
+                DataFusionError::Execution(format!("Invalid datafusion memory pool type: {}", e))
+            })?;
+        match mem_pool {
+            super::MemoryPoolType::Greedy => rn_config.with_memory_pool(Arc::new(
+                GreedyMemoryPool::new(CONFIG.memory_cache.datafusion_max_size),
+            )),
+            super::MemoryPoolType::Fair => rn_config.with_memory_pool(Arc::new(
+                FairSpillPool::new(CONFIG.memory_cache.datafusion_max_size),
+            )),
+            super::MemoryPoolType::None => rn_config,
+        }
     } else {
-        Arc::new(FairSpillPool::new(CONFIG.memory_cache.datafusion_max_size))
+        rn_config
     };
-    let rn_config = RuntimeConfig::new()
-        .with_object_store_registry(Arc::new(object_store_registry))
-        .with_memory_pool(mem_pool);
     RuntimeEnv::new(rn_config)
 }
 
@@ -1131,7 +1132,7 @@ pub async fn register_table(
     // Configure listing options   生成一个选项对象
     let listing_options = match file_type {
         FileType::PARQUET => {
-            let file_format = ParquetFormat::default().with_enable_pruning(Some(false));
+            let file_format = ParquetFormat::default();
             ListingOptions::new(Arc::new(file_format))
                 .with_file_extension(FileType::PARQUET.get_ext())
                 .with_target_partitions(CONFIG.limit.cpu_num)
@@ -1150,12 +1151,9 @@ pub async fn register_table(
     };
 
     // 根据文件类型 生成不同协议 并表示准备使用这些文件
-    let prefix = if session.storage_type.eq(&StorageType::FsMemory) {
+    let prefix = if session.storage_type.eq(&StorageType::Memory) {
         file_list::set(&session.id, files).await;
-        format!("fsm:///{}/", session.id)
-    } else if session.storage_type.eq(&StorageType::FsNoCache) {
-        file_list::set(&session.id, files).await;
-        format!("fsn:///{}/", session.id)
+        format!("memory:///{}/", session.id)
     } else if session.storage_type.eq(&StorageType::Tmpfs) {
         format!("tmpfs:///{}/", session.id)
     } else {

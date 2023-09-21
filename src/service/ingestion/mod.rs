@@ -26,8 +26,7 @@ use vrl::{
 
 use crate::common::{
     infra::{
-        config::{CONFIG, STREAM_ALERTS, STREAM_FUNCTIONS},
-        metrics,
+        config::{CONFIG, SIZE_IN_MB, STREAM_ALERTS, STREAM_FUNCTIONS},
         wal::get_or_create,
     },
     meta::{
@@ -45,6 +44,7 @@ use crate::common::{
     },
 };
 use crate::service::{db, format_partition_key, stream::stream_settings, triggers};
+
 pub mod grpc;
 
 pub fn compile_vrl_function(func: &str, org_id: &str) -> Result<VRLRuntimeConfig, std::io::Error> {
@@ -316,68 +316,14 @@ pub async fn chk_schema_by_record(
     .unwrap();
 }
 
-pub fn _write_file(
-    buf: AHashMap<String, Vec<String>>,
-    thread_id: usize,
-    org_id: &str,
-    stream_name: &str,
-    stream_type: StreamType,
-) {
-    let mut write_buf = BytesMut::new();
-    for (key, entry) in buf {
-        if entry.is_empty() {
-            continue;
-        }
-        let file = get_or_create(
-            thread_id,
-            StreamParams {
-                org_id,
-                stream_name,
-                stream_type,
-            },
-            None,
-            &key,
-            CONFIG.common.wal_memory_mode_enabled,
-        );
-
-        let mut write_size = 0;
-        if CONFIG.common.wal_line_mode_enabled {
-            for row in &entry {
-                write_buf.clear();
-                write_buf.put(row.as_bytes());
-                write_buf.put("\n".as_bytes());
-                file.write(write_buf.as_ref());
-                write_size += write_buf.len() as u64
-            }
-        } else {
-            write_buf.clear();
-            for row in &entry {
-                write_buf.put(row.as_bytes());
-                write_buf.put("\n".as_bytes());
-            }
-            file.write(write_buf.as_ref());
-            write_size += write_buf.len() as u64
-        }
-
-        // metrics
-        metrics::INGEST_RECORDS
-            .with_label_values(&[org_id, stream_name, stream_type.to_string().as_str()])
-            .inc_by(entry.len() as u64);
-        metrics::INGEST_BYTES
-            .with_label_values(&[org_id, stream_name, stream_type.to_string().as_str()])
-            .inc_by(write_size);
-    }
-}
-
 pub fn init_functions_runtime() -> Runtime {
     crate::common::utils::functions::init_vrl_runtime()
 }
 
-// 将数据写入到文件中
-pub fn write_file(
-    buf: AHashMap<String, Vec<String>>,  // 本次待写入的数据  key 代表分区信息  Vec<String> 代表多条记录
+pub async fn write_file(
+    buf: AHashMap<String, Vec<String>>,
     thread_id: usize,
-    stream_params: StreamParams,  // 包含stream的基础信息 比如stream的类型 orgid 什么的
+    stream: StreamParams,
     stream_file_name: &mut String,
     partition_time_level: Option<PartitionTimeLevel>,
 ) -> RequestStats {
@@ -403,24 +349,36 @@ pub fn write_file(
         // 获取文件
         let file = get_or_create(
             thread_id,
-            stream_params,
+            stream.clone(),
             partition_time_level,
             &key,
             CONFIG.common.wal_memory_mode_enabled,
-        );
-
-        // 设置文件名
+        )
+        .await;
         if stream_file_name.is_empty() {
             *stream_file_name = file.full_name();
         }
-        // 将数据写入到文件中
-        file.write(write_buf.as_ref());
-
-        // 更新总大小和写入的条数
-        req_stats.size += write_buf.len() as f64 / (1024.0 * 1024.0);
+        file.write(write_buf.as_ref()).await;
+        req_stats.size += write_buf.len() as f64 / SIZE_IN_MB;
         req_stats.records += entry.len() as i64;
     }
     req_stats
+}
+
+pub fn get_value(value: &Value) -> String {
+    if value.is_boolean() {
+        value.as_bool().unwrap().to_string()
+    } else if value.is_f64() {
+        value.as_f64().unwrap().to_string()
+    } else if value.is_i64() {
+        value.as_i64().unwrap().to_string()
+    } else if value.is_u64() {
+        value.as_u64().unwrap().to_string()
+    } else if value.is_string() {
+        value.as_str().unwrap().to_string()
+    } else {
+        "".to_string()
+    }
 }
 
 #[cfg(test)]

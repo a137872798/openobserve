@@ -180,6 +180,7 @@ import {
   useLocalTraceFilterField,
   verifyOrganizationStatus,
   b64DecodeUnicode,
+  formatTimeWithSuffix,
 } from "@/utils/zincutils";
 import segment from "@/services/segment_analytics";
 import config from "@/aws-exports";
@@ -940,14 +941,6 @@ export default defineComponent({
       }
     }
 
-    function formatTimeWithSuffix(ms) {
-      if (ms < 1000) {
-        return `${ms}ms`;
-      } else {
-        return `${(ms / 1000).toFixed(2)}s`;
-      }
-    }
-
     function generateHistogramData() {
       const unparsed_x_data: any[] = [];
       const xData: string[] = [];
@@ -1000,7 +993,7 @@ export default defineComponent({
             unparsed_x_data.push(bucket.zo_sql_timestamp);
             let histDate = new Date(Math.floor(bucket.zo_sql_timestamp / 1000));
             xData.push(Math.floor(histDate.getTime()));
-            yData.push(Number(bucket.duration.toFixed(2)));
+            yData.push(Number((bucket.duration / 1000).toFixed(2)));
           }
         );
       }
@@ -1064,7 +1057,7 @@ export default defineComponent({
       if (searchObj.loading == false) {
         // eslint-disable-next-line no-prototype-builtins
         if (!router.currentRoute.value.query.hasOwnProperty("query")) {
-          searchObj.data.editorValue = "duration>10";
+          searchObj.data.editorValue = "duration>1000";
         }
         loadPageData();
         restoreUrlQueryParams();

@@ -21,7 +21,7 @@ mod tests {
     use openobserve::{
         common::infra::{config::CONFIG, db::default},
         common::meta::dashboards::{Dashboard, Dashboards},
-        common::utils::json,
+        common::{meta::dashboards::v1, utils::json},
         handler::http::router::*,
     };
     use prost::Message;
@@ -67,6 +67,7 @@ mod tests {
             .unwrap_or_else(|e| log::info!("Error deleting local dir: {}", e));
 
         setup();
+        let _ = openobserve::common::infra::init().await;
         let _ = openobserve::job::init().await;
 
         for _i in 0..3 {
@@ -120,16 +121,20 @@ mod tests {
         // dashboards
         {
             let board = e2e_create_dashboard().await;
-            assert_eq!(e2e_list_dashboards().await.dashboards, vec![board.clone()]);
+            let list = e2e_list_dashboards().await;
+            assert_eq!(list.dashboards[0], board.clone());
 
-            let board = e2e_update_dashboard(Dashboard {
+            let board = e2e_update_dashboard(v1::Dashboard {
                 title: "e2e test".to_owned(),
                 description: "Logs flow downstream".to_owned(),
-                ..board
+                ..board.v1.unwrap()
             })
             .await;
-            assert_eq!(e2e_get_dashboard(&board.dashboard_id).await, board);
-            e2e_delete_dashboard(&board.dashboard_id).await;
+            assert_eq!(
+                e2e_get_dashboard(&board.clone().v1.unwrap().dashboard_id).await,
+                board
+            );
+            e2e_delete_dashboard(&board.v1.unwrap().dashboard_id).await;
             assert!(e2e_list_dashboards().await.dashboards.is_empty());
         }
 
@@ -791,7 +796,7 @@ mod tests {
         json::from_slice(&body).unwrap()
     }
 
-    async fn e2e_update_dashboard(dashboard: Dashboard) -> Dashboard {
+    async fn e2e_update_dashboard(dashboard: v1::Dashboard) -> Dashboard {
         let auth = setup();
         let app = test::init_service(
             App::new()

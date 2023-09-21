@@ -23,3 +23,13 @@ pub mod ider;
 pub mod metrics;
 pub mod storage;
 pub mod wal;
+
+pub async fn init() -> Result<(), anyhow::Error> {
+    ider::init()?;
+    wal::init().await?;
+    cache::init().await?;
+    // init db
+    db::create_table().await?;
+    file_list::create_table().await?;
+    Ok(())
+}

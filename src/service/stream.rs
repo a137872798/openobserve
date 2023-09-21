@@ -14,27 +14,30 @@
 
 use actix_web::{http, http::StatusCode, HttpResponse};
 use datafusion::arrow::datatypes::Schema;
-use std::collections::HashMap;
-use std::io::Error;
+use std::{collections::HashMap, io::Error};
 
-use crate::common::infra::config::{is_local_disk_storage, CONFIG};
-use crate::common::infra::{cache::stats, config::STREAM_SCHEMAS};
-use crate::common::meta;
-use crate::common::meta::usage::Stats;
-use crate::common::meta::{
-    http::HttpResponse as MetaHttpResponse,
-    prom,
-    stream::{PartitionTimeLevel, Stream, StreamProperty, StreamSettings, StreamStats},
-    StreamType,
+use crate::common::{
+    infra::{
+        cache::stats,
+        config::{
+            is_local_disk_storage, CONFIG, SIZE_IN_MB, SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA,
+            STREAM_SCHEMAS,
+        },
+    },
+    meta::{
+        self,
+        http::HttpResponse as MetaHttpResponse,
+        prom,
+        stream::{PartitionTimeLevel, Stream, StreamProperty, StreamSettings, StreamStats},
+        usage::Stats,
+        StreamType,
+    },
+    utils::json,
 };
-use crate::common::utils::{json, stream::SQL_FULL_TEXT_SEARCH_FIELDS};
-use crate::service::{db, search as SearchService};
-
-use super::metrics::get_prom_metadata_from_schema;
+use crate::service::{db, metrics::get_prom_metadata_from_schema, search as SearchService};
 
 const LOCAL: &str = "disk";
 const S3: &str = "s3";
-const SIZE_IN_MB: f64 = 1024.0 * 1024.0;
 
 // 获取流的数据
 pub async fn get_stream(
@@ -183,14 +186,10 @@ pub fn stream_res(
 
     // 从schema的元数据中 加载出 stream_settings
     let mut settings = stream_settings(&schema).unwrap_or_default();
-    // special handling for metrics streams
-    // 需要设置一个默认的分区级别
-    if settings.partition_time_level.unwrap_or_default() == PartitionTimeLevel::Unset {
-        settings.partition_time_level = Some(unwrap_partition_time_level(
-            settings.partition_time_level,
-            stream_type,
-        ));
-    }
+    settings.partition_time_level = Some(unwrap_partition_time_level(
+        settings.partition_time_level,
+        stream_type,
+    ));
 
     Stream {
         name: stream_name.to_string(),
@@ -223,7 +222,7 @@ pub async fn save_stream_settings(
 
     // 数据归属于不同的分区 会落在不同的数据文件   全文检索key 不能作为分区键
     for key in setting.partition_keys.iter() {
-        if SQL_FULL_TEXT_SEARCH_FIELDS.contains(&key.as_str()) {
+        if SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA.contains(key) {
             return Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
                 format!("field [{key}] can't be used for partition key"),
@@ -366,10 +365,11 @@ pub fn unwrap_partition_time_level(
     level: Option<PartitionTimeLevel>,
     stream_type: StreamType,
 ) -> PartitionTimeLevel {
-    match level {
-        Some(l) => l,
-        None => match stream_type {
-            // 从配置中获取
+    let level = level.unwrap_or_default();
+    if level != PartitionTimeLevel::Unset {
+        level
+    } else {
+        match stream_type {
             StreamType::Logs => PartitionTimeLevel::from(CONFIG.limit.logs_file_retention.as_str()),
             StreamType::Metrics => {
                 PartitionTimeLevel::from(CONFIG.limit.metrics_file_retention.as_str())
@@ -378,7 +378,7 @@ pub fn unwrap_partition_time_level(
                 PartitionTimeLevel::from(CONFIG.limit.traces_file_retention.as_str())
             }
             _ => PartitionTimeLevel::default(),
-        },
+        }
     }
 }
 
@@ -418,6 +418,7 @@ async fn get_stream_stats(
         query,
         aggs: HashMap::new(),
         encoding: meta::search::RequestEncoding::Empty,
+        timeout: 0,
     };
     match SearchService::search(&CONFIG.common.usage_org, meta::StreamType::Logs, &req).await {
         Ok(res) => {

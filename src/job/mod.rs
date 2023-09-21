@@ -18,17 +18,17 @@ use crate::common::{
     infra::{
         cluster,
         config::{CONFIG, INSTANCE_ID, SYSLOG_ENABLED},
-        db as infra_db, file_list as infra_file_list, ider,
+        file_list as infra_file_list, ider,
     },
     meta::{organization::DEFAULT_ORG, user::UserRequest},
     utils::file::clean_empty_dirs,
 };
-use crate::service::{db, users};
+use crate::service::{compact::stats::update_stats_from_file_list, db, users};
 
 mod alert_manager;
 mod compact;
-mod file_list;
-mod files;
+pub(crate) mod file_list;
+pub(crate) mod files;
 mod metrics;
 mod prom;
 mod stats;
@@ -39,9 +39,6 @@ mod telemetry;
 * 负责各个后台任务的引导工作
 */
 pub async fn init() -> Result<(), anyhow::Error> {
-    // init db   初始化元数据数据库
-    infra_db::create_table().await?;
-
     let email_regex = Regex::new(
         r"^([a-z0-9_+]([a-z0-9_+.-]*[a-z0-9_+])?)@([a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,6})",
     )
@@ -144,10 +141,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
         .await
         .expect("syslog settings cache failed");
 
-    // cache file list   上面创建的是元数据
-    infra_file_list::create_table().await?;
-
-    // 从storage拉取文件清单   在解析出数据文件后 同步到本地的DB
+    // cache file list
     if !CONFIG.common.meta_store_external
         && (cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
             || cluster::is_compactor(&cluster::LOCAL_NODE_ROLE))
@@ -156,14 +150,14 @@ pub async fn init() -> Result<(), anyhow::Error> {
         db::file_list::remote::cache("", false)
             .await
             .expect("file list remote cache failed");
-        // TODO 先忽略统计数据
-        db::file_list::remote::cache_stats()
+        update_stats_from_file_list()
             .await
-            .expect("file list remote cache stats failed");
+            .expect("file list remote calculate stats failed");
     }
-
-    // 为file_list表创建索引    如果不需要从storage同步 那么本地DB应该已经有数据了  (storage应该是全局的 本地DB是只有写入本节点的)
     infra_file_list::create_table_index().await?;
+    db::file_list::remote::cache_stats()
+        .await
+        .expect("Load stream stats failed");
 
     // check wal directory  本节点支持写入数据
     if cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {

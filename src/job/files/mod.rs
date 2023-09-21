@@ -17,8 +17,8 @@ use crate::common::{
     meta::StreamType,
 };
 
-mod disk;
-mod memory;
+pub mod disk;
+pub mod memory;
 
 /**
 * 有关数据文件的后台任务

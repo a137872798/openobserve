@@ -15,26 +15,28 @@
 use ::datafusion::arrow::{datatypes::Schema, ipc, json as arrow_json, record_batch::RecordBatch};
 use ahash::AHashMap as HashMap;
 use once_cell::sync::Lazy;
-use std::{cmp::min, io::Cursor, sync::Arc, time::Duration};
+use std::{cmp::min, io::Cursor, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::{codec::CompressionEncoding, metadata::MetadataValue, transport::Channel, Request};
 use tracing::{info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
-use crate::common::infra::{
-    cluster,
-    config::CONFIG,
-    dist_lock,
-    errors::{Error, ErrorCodes},
+use crate::common::{
+    infra::{
+        cluster,
+        config::CONFIG,
+        dist_lock,
+        errors::{Error, ErrorCodes},
+    },
+    meta::{
+        common::FileKey,
+        search,
+        stream::{PartitionTimeLevel, ScanStats, StreamParams},
+        StreamType,
+    },
+    utils::{flatten, json, str::find},
 };
-use crate::common::meta::{
-    common::FileKey,
-    search,
-    stream::{PartitionTimeLevel, ScanStats, StreamParams},
-    StreamType,
-};
-use crate::common::utils::{flatten, json, str::find};
 use crate::handler::grpc::cluster_rpc;
 use crate::service::{db, file_list, format_partition_key, format_stream_name, stream};
 
@@ -57,9 +59,7 @@ pub async fn search(
     // 代表本次的请求是由用户发起的
     req.stype = cluster_rpc::SearchType::User as i32;
     req.stream_type = stream_type.to_string();
-    tokio::task::spawn(async move { search_in_cluster(req).await })
-        .await
-        .map_err(server_internal_error)?
+    search_in_cluster(req).await
 }
 
 
@@ -248,9 +248,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                     .map_err(|_| Error::Message("invalid org_id".to_string()))?;
 
                 let mut request = tonic::Request::new(req);
-
-                // 设置grpc的超时时间
-                request.set_timeout(Duration::from_secs(CONFIG.grpc.timeout));
+                // request.set_timeout(Duration::from_secs(CONFIG.grpc.timeout));
 
                 // TODO
                 opentelemetry::global::get_text_map_propagator(|propagator| {
@@ -545,24 +543,21 @@ fn handle_metrics_response(sources: Vec<json::Value>) -> Vec<json::Value> {
 
 /// match a source is a valid file or not   判断某个source与某个stream 是否匹配
 pub async fn match_source(
-    stream: StreamParams<'_>,
+    stream: StreamParams,
     time_range: Option<(i64, i64)>,
     filters: &[(&str, &str)],
     source: &FileKey,    // stream相关的file_list文件
     is_wal: bool,
     match_min_ts_only: bool,
 ) -> bool {
-    let StreamParams {
-        org_id,
-        stream_name,
-        stream_type,
-    } = stream;
-
-    // match org_id & table   要求三要素匹配
-    if !source
-        .key
-        .starts_with(format!("files/{}/{}/{}/", org_id, stream_type, stream_name).as_str())
-    {
+    // match org_id & table
+    if !source.key.starts_with(
+        format!(
+            "files/{}/{}/{}/",
+            stream.org_id, stream.stream_type, stream.stream_name
+        )
+        .as_str(),
+    ) {
         return false;
     }
 

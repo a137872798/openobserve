@@ -23,14 +23,13 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-use crate::common::meta::{sql::Sql as MetaSql, stream::StreamParams, StreamType};
-use crate::common::utils::str::find;
 use crate::common::{
     infra::{
-        config::CONFIG,
+        config::{CONFIG, SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA},
         errors::{Error, ErrorCodes},
     },
-    meta::common::FileKey,
+    meta::{common::FileKey, sql::Sql as MetaSql, stream::StreamParams, StreamType},
+    utils::str::find,
 };
 use crate::handler::grpc::cluster_rpc;
 use crate::service::{db, search::match_source, stream::get_stream_setting_fts_fields};
@@ -431,8 +430,7 @@ impl Sql {
         let match_all_fields = if !fts_fields.is_empty() {
             fts_fields.iter().map(|v| v.to_lowercase()).collect()
         } else {
-            // 使用默认支持全文检索的字段
-            crate::common::utils::stream::SQL_FULL_TEXT_SEARCH_FIELDS
+            SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<String>()
@@ -760,11 +758,7 @@ impl Sql {
             .map(|(k, v, _)| (k.as_str(), v.as_str()))
             .collect::<Vec<(_, _)>>();
         match_source(
-            StreamParams {
-                org_id: &self.org_id,
-                stream_name: &self.stream_name,
-                stream_type,
-            },
+            StreamParams::new(&self.org_id, &self.stream_name, stream_type),
             self.meta.time_range,
             &filters,
             source,
@@ -952,6 +946,7 @@ mod tests {
             query,
             aggs: HashMap::new(),
             encoding: crate::common::meta::search::RequestEncoding::Empty,
+            timeout: 0,
         };
 
         let mut rpc_req: cluster_rpc::SearchRequest = req.to_owned().into();
@@ -1035,6 +1030,7 @@ mod tests {
                 query: query.clone(),
                 aggs: HashMap::new(),
                 encoding: crate::common::meta::search::RequestEncoding::Empty,
+                timeout: 0,
             };
             let mut rpc_req: cluster_rpc::SearchRequest = req.to_owned().into();
             rpc_req.org_id = org_id.to_string();
@@ -1122,6 +1118,7 @@ mod tests {
                 query: query.clone(),
                 aggs: HashMap::new(),
                 encoding: crate::common::meta::search::RequestEncoding::Empty,
+                timeout: 0,
             };
             let mut rpc_req: cluster_rpc::SearchRequest = req.to_owned().into();
             rpc_req.org_id = org_id.to_string();

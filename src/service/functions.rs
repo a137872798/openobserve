@@ -46,7 +46,9 @@ pub async fn save_function(org_id: String, mut func: Transform) -> Result<HttpRe
             FN_ALREADY_EXIST.to_string(),
         )))
     } else {
-        // 0 代表是 vrl函数
+        if !func.function.as_str().trim().ends_with('.') {
+            func.function = format!("{} \n .", func.function);
+        }
         if func.trans_type.unwrap() == 0 {
             // 编译检测语法
             match compile_vrl_function(func.function.as_str(), &org_id) {
@@ -102,6 +104,9 @@ pub async fn update_function(
     // 目前应该是无法从UI中直接设置stream的 所以stream要保留
     func.streams = existing_fn.streams;
 
+    if !func.function.as_str().trim().ends_with('.') {
+        func.function = format!("{} \n .", func.function);
+    }
     if func.trans_type.unwrap() == 0 {
         match compile_vrl_function(&func.function, &org_id) {
             Ok(_) => {}

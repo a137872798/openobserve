@@ -17,17 +17,21 @@ use datafusion::{
     arrow::{datatypes::Schema, json::reader::infer_json_schema, record_batch::RecordBatch},
     common::FileType,
 };
+use futures::future::try_join_all;
 use std::{io::BufReader, path::Path, sync::Arc, time::UNIX_EPOCH};
+use tokio::time::Duration;
 use tracing::{info_span, Instrument};
 
-use crate::common::infra::{
-    cache::tmpfs,
-    config::CONFIG,
-    errors::{Error, ErrorCodes},
-    wal,
+use crate::common::{
+    infra::{
+        cache::tmpfs,
+        config::CONFIG,
+        errors::{Error, ErrorCodes},
+        wal,
+    },
+    meta::{self, common::FileKey, stream::ScanStats},
+    utils::file::{get_file_contents, get_file_meta, scan_files},
 };
-use crate::common::meta::{self, common::FileKey, stream::ScanStats};
-use crate::common::utils::file::{get_file_contents, get_file_meta, scan_files};
 use crate::service::{
     db,
     search::{
@@ -43,6 +47,7 @@ pub async fn search(
     session_id: &str,
     sql: Arc<Sql>,
     stream_type: meta::StreamType,
+    timeout: u64,
 ) -> super::SearchResult {
     // get file list   根据stream_name/stream_type 和本次查询的时间范围 找到一组文件
     let mut files = get_file_list(&sql, stream_type).await?;
@@ -72,6 +77,7 @@ pub async fn search(
     if CONFIG.common.wal_memory_mode_enabled {
         // 找到满足条件的所有内存文件
         let mem_files = wal::get_search_in_memory_files(&sql.org_id, &sql.stream_name, stream_type)
+            .await
             .unwrap_or_default();
         for (file_key, file_data) in mem_files {
             scan_stats.original_size += file_data.len() as i64;
@@ -212,7 +218,8 @@ pub async fn search(
             stream_type = ?stream_type
         );
         let task =
-            tokio::task::spawn(
+            tokio::time::timeout(
+                Duration::from_secs(timeout),
                 async move {
                     // 基于该schema进行查询  并且某些字段要按照rule进行类型转换   注意这里声明了此时的文件类型是JSON  因为写入wal时就是json格式
                     exec::sql(&session, schema, &diff_fields, &sql, &files, FileType::JSON).await
@@ -223,26 +230,20 @@ pub async fn search(
     }
 
     let mut results: HashMap<String, Vec<RecordBatch>> = HashMap::new();
-    // 挨个处理每个任务
-    for task in tasks {
-        match task.await {
-            Ok(ret) => match ret {
-                Ok(ret) => {
-                    for (k, v) in ret {
-                        // key相同的数据会合并到一起
-                        let group = results.entry(k).or_insert_with(Vec::new);
-                        group.extend(v);
-                    }
+    let task_results = try_join_all(tasks)
+        .await
+        .map_err(|e| Error::ErrorCode(ErrorCodes::ServerInternalError(e.to_string())))?;
+    for ret in task_results {
+        match ret {
+            Ok(ret) => {
+                for (k, v) in ret {
+                    let group = results.entry(k).or_insert_with(Vec::new);
+                    group.extend(v);
                 }
-                Err(err) => {
-                    log::error!("datafusion execute error: {}", err);
-                    return Err(super::handle_datafusion_error(err));
-                }
-            },
+            }
             Err(err) => {
-                return Err(Error::ErrorCode(ErrorCodes::ServerInternalError(
-                    err.to_string(),
-                )));
+                log::error!("datafusion execute error: {}", err);
+                return Err(super::handle_datafusion_error(err));
             }
         };
     }

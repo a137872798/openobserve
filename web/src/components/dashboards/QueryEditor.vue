@@ -14,7 +14,7 @@
 -->
 
 <template>
-  <div ref="editorRef" id="editor"></div>
+  <div data-test="dashboard-panel-query-editor-div" ref="editorRef" id="editor"></div>
 </template>
 
 <script lang="ts">
@@ -273,12 +273,16 @@ export default defineComponent({
       );
     });
 
-    onActivated(async () => {
+    onMounted(async () => {
       provider.value?.dispose();
       registerAutoCompleteProvider();
+      window.addEventListener("click", () => {
+        editorObj.layout();
+        // queryEditorRef.value.resetEditorLayout();
+      });
     });
 
-    onDeactivated(() => {
+    onUnmounted(() => {
       provider.value?.dispose();
     });
 
@@ -369,7 +373,9 @@ export default defineComponent({
 
 <style>
 #editor {
-  min-height: 4rem;
+  min-height: 100%;
+  width: 100%;;
+  /* min-height: 4rem; */
   border-radius: 5px;
   border: 0px solid #dbdbdb;
 }

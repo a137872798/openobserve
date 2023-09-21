@@ -280,8 +280,8 @@ impl PartitionTimeLevel {
     pub fn duration(self) -> i64 {
         match self {
             PartitionTimeLevel::Unset => 0,
-            PartitionTimeLevel::Hourly => 3600000,
-            PartitionTimeLevel::Daily => 86400000,
+            PartitionTimeLevel::Hourly => 3600, // seconds, 1 hour
+            PartitionTimeLevel::Daily => 86400, // seconds, 24 hour
         }
     }
 }
@@ -311,14 +311,24 @@ impl std::fmt::Display for PartitionTimeLevel {
 pub struct ListStream {
     pub list: Vec<Stream>,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, ToSchema)]
-pub struct StreamParams<'a> {
-    pub org_id: &'a str,
-    pub stream_name: &'a str,
+
+#[derive(Clone, Debug)]
+pub struct StreamParams {
+    pub org_id: faststr::FastStr,
+    pub stream_name: faststr::FastStr,
     pub stream_type: StreamType,
 }
 
-// 描述schema验证的结果
+impl StreamParams {
+    pub fn new(org_id: &str, stream_name: &str, stream_type: StreamType) -> Self {
+        Self {
+            org_id: org_id.to_string().into(),
+            stream_name: stream_name.to_string().into(),
+            stream_type,
+        }
+    }
+}
+
 pub struct SchemaEvolution {
     pub schema_compatible: bool,
     pub types_delta: Option<Vec<Field>>,  // 代表相较原schema增加的field
@@ -369,5 +379,13 @@ mod test {
         let stats_str: String = stats.try_into().unwrap();
         let stats_frm_str = StreamStats::from(stats_str.as_str());
         assert_eq!(stats, stats_frm_str);
+    }
+
+    #[test]
+    fn test_stream_params() {
+        let params = StreamParams::new("org_id", "stream_name", StreamType::Logs);
+        assert_eq!(params.org_id, "org_id");
+        assert_eq!(params.stream_name, "stream_name");
+        assert_eq!(params.stream_type, StreamType::Logs);
     }
 }

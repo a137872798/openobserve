@@ -123,10 +123,17 @@ pub async fn search(
         return Ok(bad_request(e));
     }
 
-    req.query.query_fn = req.query.query_fn.and_then(|v| base64::decode(&v).ok());
+    let mut query_fn = req.query.query_fn.and_then(|v| base64::decode(&v).ok());
+
+    if let Some(vrl_function) = &query_fn {
+        if !vrl_function.trim().ends_with('.') {
+            query_fn = Some(format!("{} \n .", vrl_function));
+        }
+    }
+    req.query.query_fn = query_fn;
 
     for fn_name in functions::get_all_transform_keys(&org_id).await {
-        if req.query.sql.contains(&fn_name) {
+        if req.query.sql.contains(&format!("{}(", fn_name)) {
             req.query.uses_zo_fn = true;
             break;
         }
@@ -228,6 +235,7 @@ pub async fn search(
         ("stream_name" = String, Path, description = "stream_name name"),
         ("key" = i64, Query, description = "around key"),
         ("size" = i64, Query, description = "around size"),
+        ("timeout" = Option<i64>, Query, description = "timeout, seconds"),
     ),
     responses(
         (status = 200, description="Success", content_type = "application/json", body = SearchResponse, example = json!({
@@ -290,7 +298,7 @@ pub async fn around(
                 uses_fn = functions::get_all_transform_keys(&org_id)
                     .await
                     .iter()
-                    .any(|fn_name| v.contains(fn_name));
+                    .any(|fn_name| v.contains(&format!("{}(", fn_name)));
                 if uses_fn {
                     v
                 } else {
@@ -313,7 +321,11 @@ pub async fn around(
         None
     };
 
-    // search forward  构建查询条件
+    let timeout = query
+        .get("timeout")
+        .map_or(0, |v| v.parse::<i64>().unwrap_or(0));
+
+    // search forward
     let req = meta::search::Request {
         query: meta::search::Query {
             sql: around_sql.clone(),
@@ -331,6 +343,7 @@ pub async fn around(
         },
         aggs: HashMap::new(),
         encoding: meta::search::RequestEncoding::Empty,
+        timeout,
     };
     let resp_forward = match SearchService::search(&org_id, stream_type, &req).await {
         Ok(res) => res,
@@ -384,6 +397,7 @@ pub async fn around(
         },
         aggs: HashMap::new(),
         encoding: meta::search::RequestEncoding::Empty,
+        timeout,
     };
     let resp_backward = match SearchService::search(&org_id, stream_type, &req).await {
         Ok(res) => res,
@@ -490,9 +504,11 @@ pub async fn around(
         ("org_id" = String, Path, description = "Organization name"),
         ("stream_name" = String, Path, description = "stream_name name"),
         ("fields" = String, Query, description = "fields, split by comma"),
+        ("filter" = Option<String>, Query, description = "filter, eg: a=b"),
         ("size" = i64, Query, description = "size"), // topN
         ("start_time" = i64, Query, description = "start time"),
         ("end_time" = i64, Query, description = "end time"),
+        ("timeout" = Option<i64>, Query, description = "timeout, seconds"),
     ),
     responses(
         (status = 200, description="Success", content_type = "application/json", body = SearchResponse, example = json!({
@@ -522,14 +538,30 @@ pub async fn values(
         Err(e) => return Ok(bad_request(e)),
     };
 
-    // 这些field就是聚合字段  
+    // 这些field就是聚合字段
     let fields = match query.get("fields") {
         Some(v) => v.split(',').map(|s| s.to_string()).collect::<Vec<_>>(),
         None => return Ok(bad_request("fields is empty")),
     };
-    let query_fn = query.get("query_fn").and_then(|v| base64::decode(v).ok());
+    let mut query_fn = query.get("query_fn").and_then(|v| base64::decode(v).ok());
+    if let Some(vrl_function) = &query_fn {
+        if !vrl_function.trim().ends_with('.') {
+            query_fn = Some(format!("{} \n .", vrl_function));
+        }
+    }
 
     let default_sql = format!("SELECT * FROM \"{stream_name}\"");
+    let mut query_sql = match query.get("filter") {
+        None => default_sql,
+        Some(v) => {
+            if v.is_empty() {
+                default_sql
+            } else {
+                format!("{} WHERE {v}", default_sql)
+            }
+        }
+    };
+
     let query_context = match query.get("sql") {
         None => None,
         Some(v) => match base64::decode(v) {
@@ -538,11 +570,15 @@ pub async fn values(
                 uses_fn = functions::get_all_transform_keys(&org_id)
                     .await
                     .iter()
-                    .any(|fn_name| v.contains(fn_name));
-                uses_fn.then_some(v)
+                    .any(|fn_name| v.contains(&format!("{}(", fn_name)));
+                Some(v)
             }
         },
     };
+
+    if query_context.is_some() {
+        query_sql = query_context.clone().unwrap();
+    }
 
     // 都是从uri中解析参数
     let size = query
@@ -561,6 +597,10 @@ pub async fn values(
         end_time = chrono::Utc::now().timestamp_micros();
     }
 
+    let timeout = query
+        .get("timeout")
+        .map_or(0, |v| v.parse::<i64>().unwrap_or(0));
+
     // get a local search queue lock
     let locker = SearchService::QUEUE_LOCKER.clone();
     let _locker = locker.lock().await;
@@ -568,7 +608,7 @@ pub async fn values(
     // search  根据参数构建req
     let mut req = meta::search::Request {
         query: meta::search::Query {
-            sql: default_sql.clone(),
+            sql: query_sql,
             from: 0,
             size: 0,
             start_time,
@@ -583,6 +623,7 @@ pub async fn values(
         },
         aggs: HashMap::new(),
         encoding: meta::search::RequestEncoding::Empty,
+        timeout,
     };
 
     for field in &fields {

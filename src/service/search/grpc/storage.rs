@@ -14,19 +14,22 @@
 
 use ahash::AHashMap as HashMap;
 use datafusion::{arrow::record_batch::RecordBatch, common::FileType};
+use futures::future::try_join_all;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, time::Duration};
 use tracing::{info_span, Instrument};
 
-use crate::common::infra::{
-    cache::file_data,
-    config::CONFIG,
-    errors::{Error, ErrorCodes},
-};
-use crate::common::meta::{
-    self,
-    common::FileKey,
-    stream::{PartitionTimeLevel, ScanStats},
+use crate::common::{
+    infra::{
+        cache::file_data,
+        config::{is_local_disk_storage, CONFIG},
+        errors::{Error, ErrorCodes},
+    },
+    meta::{
+        self,
+        common::FileKey,
+        stream::{PartitionTimeLevel, ScanStats},
+    },
 };
 use crate::service::{
     db, file_list,
@@ -42,9 +45,10 @@ use crate::service::{
 #[tracing::instrument(name = "service:search:grpc:storage:enter", skip_all, fields(org_id = sql.org_id, stream_name = sql.stream_name))]
 pub async fn search(
     session_id: &str,
-    sql: Arc<Sql>,    // 本次查询的sql
-    file_list: &[FileKey],  // 本次需要查询的所有文件
-    stream_type: meta::StreamType,  // 描述数据流类型
+    sql: Arc<Sql>,
+    file_list: &[FileKey],
+    stream_type: meta::StreamType,
+    timeout: u64,
 ) -> super::SearchResult {
     // fetch all schema versions, group files by version
     // 获取往期所有的schema
@@ -147,33 +151,20 @@ pub async fn search(
         scan_stats.compressed_size
     );
 
-    // if scan_compressed_size > 80% of total memory cache, skip memory cache
-    let storage_type = if !CONFIG.memory_cache.enabled
-        // 当文件数据 超过了某个大小后 就不经过缓存 而是直接读取文件
-        || scan_stats.compressed_size > CONFIG.memory_cache.skip_size as i64
-    {
-        StorageType::FsNoCache
-    } else {
-        StorageType::FsMemory
-    };
-
     // load files to local cache
-    if storage_type == StorageType::FsMemory {
-        // 返回的是加载失败的文件
-        let deleted_files = cache_parquet_files(&files).await?;
-        if !deleted_files.is_empty() {
-            // remove deleted files from files_group  移除被删除的文件
-            for (_, g_files) in files_group.iter_mut() {
-                g_files.retain(|f| !deleted_files.contains(&f.key));
-            }
+    let deleted_files = cache_parquet_files(&files, &scan_stats).await?;
+    if !deleted_files.is_empty() {
+        // remove deleted files from files_group
+        for (_, g_files) in files_group.iter_mut() {
+            g_files.retain(|f| !deleted_files.contains(&f.key));
         }
-        log::info!(
-            "search->storage: org {}, stream {}, load files {}, into memory cache done",
-            &sql.org_id,
-            &sql.stream_name,
-            scan_stats.files
-        );
     }
+    log::info!(
+        "search->storage: org {}, stream {}, load files {}, into memory cache done",
+        &sql.org_id,
+        &sql.stream_name,
+        scan_stats.files
+    );
 
     let mut tasks = Vec::new();
 
@@ -187,7 +178,7 @@ pub async fn search(
         let sql = sql.clone();
         let session = meta::search::Session {
             id: format!("{session_id}-{ver}"),
-            storage_type: storage_type.clone(),
+            storage_type: StorageType::Memory,
         };
         // cacluate the diff between latest schema and group schema   记录同名不同类型的field
         let mut diff_fields = HashMap::new();
@@ -202,7 +193,8 @@ pub async fn search(
             }
         }
         let datafusion_span = info_span!("service:search:grpc:storage:datafusion", org_id = sql.org_id,stream_name = sql.stream_name, stream_type = ?stream_type);
-        let task = tokio::task::spawn(
+        let task = tokio::time::timeout(
+            Duration::from_secs(timeout),
             async move {
                 // 执行查询 注意标记文件格式为 parquet
                 exec::sql(
@@ -222,24 +214,20 @@ pub async fn search(
 
     // 等待查询完成
     let mut results: HashMap<String, Vec<RecordBatch>> = HashMap::new();
-    for task in tasks {
-        match task.await {
-            Ok(ret) => match ret {
-                Ok(ret) => {
-                    for (k, v) in ret {
-                        let group = results.entry(k).or_insert_with(Vec::new);
-                        group.extend(v);
-                    }
+    let task_results = try_join_all(tasks)
+        .await
+        .map_err(|e| Error::ErrorCode(ErrorCodes::ServerInternalError(e.to_string())))?;
+    for ret in task_results {
+        match ret {
+            Ok(ret) => {
+                for (k, v) in ret {
+                    let group = results.entry(k).or_insert_with(Vec::new);
+                    group.extend(v);
                 }
-                Err(err) => {
-                    log::error!("datafusion execute error: {}", err);
-                    return Err(super::handle_datafusion_error(err));
-                }
-            },
+            }
             Err(err) => {
-                return Err(Error::ErrorCode(ErrorCodes::ServerInternalError(
-                    err.to_string(),
-                )));
+                log::error!("datafusion execute error: {}", err);
+                return Err(super::handle_datafusion_error(err));
             }
         };
     }
@@ -285,30 +273,65 @@ async fn get_file_list(
 
 // 从storage查询parquet文件
 #[tracing::instrument(name = "service:search:grpc:storage:cache_parquet_files", skip_all)]
-async fn cache_parquet_files(files: &[FileKey]) -> Result<Vec<String>, Error> {
+async fn cache_parquet_files(
+    files: &[FileKey],
+    scan_stats: &ScanStats,
+) -> Result<Vec<String>, Error> {
+    let cache_type = if CONFIG.memory_cache.enabled
+        && scan_stats.compressed_size < CONFIG.memory_cache.skip_size as i64
+    {
+        // if scan_compressed_size < 80% of total memory cache, use memory cache
+        file_data::CacheType::Memory
+    } else if !is_local_disk_storage()
+        && CONFIG.disk_cache.enabled
+        && scan_stats.compressed_size < CONFIG.disk_cache.skip_size as i64
+    {
+        // if scan_compressed_size < 80% of total disk cache, use disk cache
+        file_data::CacheType::Disk
+    } else {
+        // no cache
+        return Ok(vec![]);
+    };
+
     let mut tasks = Vec::new();
     let semaphore = std::sync::Arc::new(Semaphore::new(CONFIG.limit.query_thread_num));
     for file in files.iter() {
         let file_name = file.key.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let task: tokio::task::JoinHandle<Option<String>> = tokio::task::spawn(async move {
-
-            // 表示文件数据还没有加载到内存   因为某些parquet文件可能已经提前加载到内存了  就不需要重复拉取了
-            if !file_data::exist(&file_name) {
-                // 从 ObjectStore读取数据 拉取到内存
-                if let Err(e) = file_data::download(&file_name).await {
-                    log::info!("search->storage: download file err: {}", e);
-                    if e.to_string().to_lowercase().contains("not found") {
-                        // delete file from file list
-                        if let Err(e) = file_list::delete_parquet_file(&file_name, true).await {
-                            log::error!("search->storage: delete from file_list err: {}", e);
-                        }
-                        return Some(file_name);
+            let ret = match cache_type {
+                file_data::CacheType::Memory => {
+                    if !file_data::memory::exist(&file_name).await {
+                        file_data::memory::download(&file_name).await.err()
+                    } else {
+                        None
                     }
                 }
+                file_data::CacheType::Disk => {
+                    if !file_data::disk::exist(&file_name).await {
+                        file_data::disk::download(&file_name).await.err()
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            let ret = if let Some(e) = ret {
+                log::info!("search->storage: download file to cache err: {}", e);
+                if e.to_string().to_lowercase().contains("not found") {
+                    // delete file from file list
+                    if let Err(e) = file_list::delete_parquet_file(&file_name, true).await {
+                        log::error!("search->storage: delete from file_list err: {}", e);
+                    }
+                    Some(file_name)
+                } else {
+                    None
+                }
+            } else {
+                None
             };
             drop(permit);
-            None
+            ret
         });
         tasks.push(task);
     }

@@ -15,10 +15,8 @@
 use tokio::time;
 
 use crate::common::infra::{
-    cache::stats,
     cluster::{is_compactor, is_querier},
     config::CONFIG,
-    file_list as infra_file_list,
 };
 use crate::service::{compact::stats::update_stats_from_file_list, db, usage};
 
@@ -49,7 +47,7 @@ async fn usage_report_stats() -> Result<(), anyhow::Error> {
 
 // get stats from file_list to update stream_stats
 async fn file_list_update_stats() -> Result<(), anyhow::Error> {
-    if !is_querier(&super::cluster::LOCAL_NODE_ROLE)
+    if (CONFIG.common.meta_store_external || !is_querier(&super::cluster::LOCAL_NODE_ROLE))
         && !is_compactor(&super::cluster::LOCAL_NODE_ROLE)
     {
         return Ok(());
@@ -80,29 +78,8 @@ async fn cache_stream_stats() -> Result<(), anyhow::Error> {
     interval.tick().await; // trigger the first run
     loop {
         interval.tick().await;
-        let start = std::time::Instant::now();
-        let orgs = db::schema::list_organizations_from_cache();
-        for org_id in orgs {
-            let ret = infra_file_list::get_stream_stats(&org_id, None, None).await;
-            if ret.is_err() {
-                log::error!(
-                    "[STATS] run cache stream stats error: {}",
-                    ret.err().unwrap()
-                );
-                continue;
-            }
-            for (stream, stats) in ret.unwrap() {
-                let columns = stream.split('/').collect::<Vec<&str>>();
-                let org_id = columns[0];
-                let stream_type = columns[1];
-                let stream_name = columns[2];
-                stats::set_stream_stats(org_id, stream_name, stream_type.into(), stats);
-            }
-            time::sleep(time::Duration::from_millis(100)).await;
+        if let Err(e) = db::file_list::remote::cache_stats().await {
+            log::error!("[STATS] run cache stream stats error: {}", e);
         }
-        log::info!(
-            "[STATS] cache stream stats in {}s",
-            start.elapsed().as_secs()
-        );
     }
 }

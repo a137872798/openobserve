@@ -15,17 +15,15 @@
 use thiserror::Error as ThisError;
 
 pub mod file_list;
-pub mod memory; // fsm: File system with memory cache
-pub mod nocache; // fsn: File system without memory cahce
+pub mod memory;
 pub mod tmpfs;
 
 
 // 描述几种存储类型
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageType {
-    FsMemory,  // fsm   检查OO是否开启了内存缓存 如果开启了会使用这个storage 在datafusion时就会使用不同的ObjectStore 从而利用内存缓存
-    FsNoCache, // fsn   直接走文件
-    Tmpfs,     //       使用临时文件
+    Memory,
+    Tmpfs,
 }
 
 /// A specialized `Error` for in-memory object store-related errors

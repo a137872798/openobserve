@@ -26,7 +26,8 @@ use crate::common::{
     utils::{json, stream::populate_file_meta},
 };
 use crate::service::{
-    db, schema::schema_evolution, search::datafusion::new_writer, usage::report_compression_stats,
+    db, schema::schema_evolution, search::datafusion::new_parquet_writer,
+    usage::report_compression_stats,
 };
 
 /**
@@ -51,9 +52,9 @@ pub async fn run() -> Result<(), anyhow::Error> {
  * upload compressed files to storage & delete moved files from local
  * 除了实际写入到磁盘的wal文件  模拟的wal内存文件也需要同步到storage    这里的操作和disk.rs一样
  */
-async fn move_files_to_storage() -> Result<(), anyhow::Error> {
+pub async fn move_files_to_storage() -> Result<(), anyhow::Error> {
     // need to clone here, to avoid thread boundry issues across awaits
-    let files = wal::MEMORY_FILES.list().clone();
+    let files = wal::MEMORY_FILES.list("").await;
     // use multiple threads to upload files
     let mut tasks = Vec::new();
     let semaphore = std::sync::Arc::new(Semaphore::new(CONFIG.limit.file_move_thread_num));
@@ -80,7 +81,7 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
                 &stream_name,
                 file
             );
-            wal::MEMORY_FILES.remove(&file);
+            wal::MEMORY_FILES.remove(&file).await;
             continue;
         }
 
@@ -114,7 +115,7 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             }
 
             // delete files
-            wal::MEMORY_FILES.remove(&local_file);
+            wal::MEMORY_FILES.remove(&local_file).await;
 
             // metrics
             let columns = key.split('/').collect::<Vec<&str>>();
@@ -150,7 +151,7 @@ async fn upload_file(
     let file_size = buf.len() as u64;
     log::info!("[JOB] File upload begin: memory: {}", path_str);
     if file_size == 0 {
-        wal::MEMORY_FILES.remove(path_str);
+        wal::MEMORY_FILES.remove(path_str).await;
         return Err(anyhow::anyhow!("file is empty: {}", path_str));
     }
 
@@ -196,17 +197,7 @@ async fn upload_file(
     };
     let arrow_schema = Arc::new(inferred_schema);
 
-    let mut meta_batch = vec![];
-    let mut buf_parquet = Vec::new();
-
-    let bf_fields =
-        if CONFIG.common.traces_bloom_filter_enabled && stream_type == StreamType::Traces {
-            Some(vec![COLUMN_TRACE_ID])
-        } else {
-            None
-        };
-    let mut writer = new_writer(&mut buf_parquet, &arrow_schema, None, bf_fields);
-
+    let mut batches = vec![];
     if res_records.is_empty() {
         let json_reader = BufReader::new(buf.as_ref());
         let json = ReaderBuilder::new(arrow_schema.clone())
@@ -214,37 +205,51 @@ async fn upload_file(
             .unwrap();
         for batch in json {
             let batch_write = batch.unwrap();
-            writer.write(&batch_write).expect("Write batch succeeded");
-            meta_batch.push(batch_write);
+            batches.push(batch_write);
         }
     } else {
         let mut json = vec![];
         let mut decoder = ReaderBuilder::new(arrow_schema.clone()).build_decoder()?;
-
         for value in res_records {
             decoder
                 .decode(json::to_string(&value).unwrap().as_bytes())
                 .unwrap();
             json.push(decoder.flush()?.unwrap());
         }
-
         for batch in json {
-            writer.write(&batch).expect("Write batch succeeded");
-            meta_batch.push(batch);
+            batches.push(batch);
         }
     };
-    writer.close().unwrap();
 
-    //let file_name = path.file_name();
+    // write metadata
     let mut file_meta = FileMeta {
         min_ts: 0,
         max_ts: 0,
         records: 0,
         original_size: file_size as i64,
-        compressed_size: buf_parquet.len() as i64,
+        compressed_size: 0,
     };
+    populate_file_meta(arrow_schema.clone(), vec![batches.to_vec()], &mut file_meta).await?;
 
-    populate_file_meta(arrow_schema.clone(), vec![meta_batch], &mut file_meta).await?;
+    // write parquet file
+    let mut buf_parquet = Vec::new();
+    let bf_fields =
+        if CONFIG.common.traces_bloom_filter_enabled && stream_type == StreamType::Traces {
+            Some(vec![COLUMN_TRACE_ID])
+        } else {
+            None
+        };
+    let mut writer = new_parquet_writer(
+        &mut buf_parquet,
+        &arrow_schema,
+        file_meta.records as u64,
+        bf_fields,
+    );
+    for batch in batches {
+        writer.write(&batch)?;
+    }
+    writer.close()?;
+    file_meta.compressed_size = buf_parquet.len() as i64;
 
     schema_evolution(
         org_id,

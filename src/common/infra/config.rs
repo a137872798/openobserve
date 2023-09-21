@@ -17,20 +17,24 @@ use dashmap::{DashMap, DashSet};
 use datafusion::arrow::datatypes::Schema;
 use dotenv_config::EnvConfig;
 use dotenvy::dotenv;
+use itertools::chain;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use reqwest::Client;
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
+use sysinfo::{DiskExt, SystemExt};
 use vector_enrichment::TableRegistry;
 
-use crate::common::meta::{
-    alert::{AlertDestination, AlertList, DestinationTemplate, Trigger, TriggerTimer},
-    functions::{StreamFunctionsList, Transform},
-    prom::ClusterLeader,
-    syslog::SyslogRoute,
-    user::User,
+use crate::common::{
+    meta::{
+        alert::{AlertDestination, AlertList, DestinationTemplate, Trigger, TriggerTimer},
+        functions::{StreamFunctionsList, Transform},
+        prom::ClusterLeader,
+        syslog::SyslogRoute,
+        user::User,
+    },
+    utils::{cgroup, file::get_file_meta},
 };
-use crate::common::utils::{cgroup, file::get_file_meta};
 use crate::service::enrichment::StreamTable;
 
 pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, ahash::RandomState>;
@@ -43,18 +47,39 @@ pub static VERSION: &str = env!("GIT_VERSION");
 pub static COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 pub static BUILD_DATE: &str = env!("GIT_BUILD_DATE");
 
+pub const SIZE_IN_MB: f64 = 1024.0 * 1024.0;
+pub const PARQUET_BATCH_SIZE: usize = 8 * 1024;
+pub const PARQUET_PAGE_SIZE: usize = 1024 * 1024;
+pub const PARQUET_MAX_ROW_GROUP_SIZE: usize = 1024 * 1024;
+
 pub const HAS_FUNCTIONS: bool = true;
 pub const FILE_EXT_JSON: &str = ".json";
 pub const FILE_EXT_PARQUET: &str = ".parquet";
 pub const COLUMN_TRACE_ID: &str = "trace_id";
 
-pub const PARQUET_BATCH_SIZE: usize = 8 * 1024;
-pub const PARQUET_PAGE_SIZE: usize = 1024 * 1024;
-pub const PARQUET_MAX_ROW_GROUP_SIZE: usize = 1024 * 1024;
+const SQL_FULL_TEXT_SEARCH_FIELDS: [&str; 7] =
+    ["log", "message", "msg", "content", "data", "events", "json"];
+
+pub static SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA: Lazy<Vec<String>> = Lazy::new(|| {
+    chain(
+        SQL_FULL_TEXT_SEARCH_FIELDS.iter().map(|s| s.to_string()),
+        CONFIG
+            .common
+            .feature_fulltext_extra_fields
+            .split(',')
+            .filter_map(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            }),
+    )
+    .collect()
+});
 
 pub static CONFIG: Lazy<Config> = Lazy::new(init);
-
-// 缓存实例id 整个集群唯一
 pub static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 
 pub static TELEMETRY_CLIENT: Lazy<segment::HttpClient> = Lazy::new(|| {
@@ -69,17 +94,10 @@ pub static TELEMETRY_CLIENT: Lazy<segment::HttpClient> = Lazy::new(|| {
 
 // global cache variables
 pub static KVS: Lazy<RwHashMap<String, bytes::Bytes>> = Lazy::new(Default::default);
-
-// 存储每个stream出现过的所有schema
 pub static STREAM_SCHEMAS: Lazy<RwHashMap<String, Vec<Schema>>> = Lazy::new(Default::default);
-
-
 pub static STREAM_FUNCTIONS: Lazy<RwHashMap<String, StreamFunctionsList>> =
     Lazy::new(DashMap::default);
-// 有2种函数 一种关联到stream上 对应STREAM_FUNCTIONS  还有种不用关联stream 存放在这里
 pub static QUERY_FUNCTIONS: Lazy<RwHashMap<String, Transform>> = Lazy::new(DashMap::default);
-
-// 缓存了每个用户
 pub static USERS: Lazy<RwHashMap<String, User>> = Lazy::new(DashMap::default);
 pub static ROOT_USER: Lazy<RwHashMap<String, User>> = Lazy::new(DashMap::default);
 pub static PASSWORD_HASH: Lazy<RwHashMap<String, String>> = Lazy::new(DashMap::default);
@@ -112,6 +130,7 @@ pub struct Config {
     pub limit: Limit,
     pub compact: Compact,
     pub memory_cache: MemoryCache,
+    pub disk_cache: DiskCache,
     pub log: Log,
     pub etcd: Etcd,
     pub sled: Sled,
@@ -122,9 +141,6 @@ pub struct Config {
     pub profiling: Pyroscope,
 }
 
-/**
- * 暴露给grafana的地址/端口
- */
 #[derive(EnvConfig)]
 pub struct Pyroscope {
     #[env_config(
@@ -160,10 +176,10 @@ pub struct Grpc {
     pub port: u16,
     #[env_config(name = "ZO_GRPC_ADDR", default = "")]
     pub addr: String,
-    #[env_config(name = "ZO_GRPC_TIMEOUT", default = 600)]
-    pub timeout: u64,
-    #[env_config(name = "ZO_GRPC_ORG_HEADER_KEY", default = "zinc-org-id")]
+    #[env_config(name = "ZO_GRPC_ORG_HEADER_KEY", default = "organization")]
     pub org_header_key: String,
+    #[env_config(name = "ZO_GRPC_STREAM_HEADER_KEY", default = "stream-name")]
+    pub stream_header_key: String,
     #[env_config(name = "ZO_INTERNAL_GRPC_TOKEN", default = "")]
     pub internal_grpc_token: String,
 }
@@ -191,10 +207,9 @@ pub struct Common {
     pub local_mode_storage: String,
     #[env_config(name = "ZO_META_STORE", default = "")]
     pub meta_store: String,
-    // 为false时 就需要从storage上拉取file_list
     pub meta_store_external: bool, // external storage no need sync file_list to s3
-    #[env_config(name = "ZO_META_STORE_POSTGRES_DSN", default = "")]
-    pub meta_store_postgres_dsn: String,
+    #[env_config(name = "ZO_META_POSTGRES_DSN", default = "")]
+    pub meta_postgres_dsn: String,
     #[env_config(name = "ZO_NODE_ROLE", default = "all")]
     pub node_role: String,
     #[env_config(name = "ZO_CLUSTER_NAME", default = "zo1")]
@@ -209,9 +224,11 @@ pub struct Common {
     pub data_stream_dir: String,
     #[env_config(name = "ZO_DATA_DB_DIR", default = "")] // ./data/openobserve/db/
     pub data_db_dir: String,
+    #[env_config(name = "ZO_DATA_CACHE_DIR", default = "")] // ./data/openobserve/cache/
+    pub data_cache_dir: String,
     #[env_config(name = "ZO_BASE_URI", default = "")]
     pub base_uri: String,
-    #[env_config(name = "ZO_WAL_MEMORY_MODE_ENABLED", default = false)]  // 代表使用内存模拟文件
+    #[env_config(name = "ZO_WAL_MEMORY_MODE_ENABLED", default = false)]
     pub wal_memory_mode_enabled: bool,
     #[env_config(name = "ZO_WAL_LINE_MODE_ENABLED", default = true)]
     pub wal_line_mode_enabled: bool,
@@ -219,8 +236,7 @@ pub struct Common {
     pub parquet_compression: String,
     #[env_config(name = "ZO_COLUMN_TIMESTAMP", default = "_timestamp")]
     pub column_timestamp: String,
-    // 是否允许schema发生变化
-    #[env_config(name = "ZO_WIDENING_SCHEMA_EVOLUTION", default = false)]
+    #[env_config(name = "ZO_WIDENING_SCHEMA_EVOLUTION", default = true)]
     pub widening_schema_evolution: bool,
     #[env_config(name = "ZO_SKIP_SCHEMA_VALIDATION", default = false)]
     pub skip_schema_validation: bool,
@@ -228,6 +244,8 @@ pub struct Common {
     pub feature_per_thread_lock: bool,
     #[env_config(name = "ZO_FEATURE_FULLTEXT_ON_ALL_FIELDS", default = false)]
     pub feature_fulltext_on_all_fields: bool,
+    #[env_config(name = "ZO_FEATURE_FULLTEXT_EXTRA_FIELDS", default = "")]
+    pub feature_fulltext_extra_fields: String,
     #[env_config(name = "ZO_UI_ENABLED", default = true)]
     pub ui_enabled: bool,
     #[env_config(name = "ZO_UI_SQL_BASE64_ENABLED", default = false)]
@@ -255,6 +273,8 @@ pub struct Common {
     pub prometheus_enabled: bool,
     #[env_config(name = "ZO_PRINT_KEY_CONFIG", default = false)]
     pub print_key_config: bool,
+    #[env_config(name = "ZO_PRINT_KEY_EVENT", default = false)]
+    pub print_key_event: bool,
     #[env_config(name = "ZO_PRINT_KEY_SQL", default = false)]
     pub print_key_sql: bool,
     #[env_config(name = "ZO_USAGE_REPORTING_ENABLED", default = false)]
@@ -272,6 +292,8 @@ pub struct Limit {
     // no need set by environment
     pub cpu_num: usize,
     pub mem_total: usize,
+    pub disk_total: usize,
+    pub disk_free: usize,
     #[env_config(name = "ZO_JSON_LIMIT", default = 209715200)]
     pub req_json_limit: usize,
     #[env_config(name = "ZO_PAYLOAD_LIMIT", default = 209715200)]
@@ -286,7 +308,9 @@ pub struct Limit {
     pub file_move_thread_num: usize,
     #[env_config(name = "ZO_QUERY_THREAD_NUM", default = 0)]
     pub query_thread_num: usize,
-    #[env_config(name = "ZO_INGEST_ALLOWED_UPTO", default = 5)] // in hours - in past   代表一个时间戳的漂移
+    #[env_config(name = "ZO_QUERY_TIMEOUT", default = 600)]
+    pub query_timeout: u64,
+    #[env_config(name = "ZO_INGEST_ALLOWED_UPTO", default = 5)] // in hours - in past
     pub ingest_allowed_upto: i64,
     #[env_config(name = "ZO_LOGS_FILE_RETENTION", default = "hourly")]
     pub logs_file_retention: String,
@@ -300,7 +324,7 @@ pub struct Limit {
     pub metrics_leader_election_interval: i64,
     #[env_config(name = "ZO_HEARTBEAT_INTERVAL", default = 30)] // in minutes
     pub hb_interval: i64,
-    #[env_config(name = "ZO_COLS_PER_RECORD_LIMIT", default = 0)]
+    #[env_config(name = "ZO_COLS_PER_RECORD_LIMIT", default = 1000)]
     pub req_cols_per_record_limit: usize,
     #[env_config(name = "ZO_HTTP_WORKER_NUM", default = 0)] // equals to cpu_num if 0
     pub http_worker_num: usize,
@@ -352,22 +376,39 @@ pub struct MemoryCache {
 }
 
 #[derive(EnvConfig)]
+pub struct DiskCache {
+    #[env_config(name = "ZO_DISK_CACHE_ENABLED", default = true)]
+    pub enabled: bool,
+    // MB, default is 50% of local volume available space and maximum 100GB
+    #[env_config(name = "ZO_DISK_CACHE_MAX_SIZE", default = 0)]
+    pub max_size: usize,
+    // MB, will skip the cache when a query need cache great than this value, default is 80% of max_size
+    #[env_config(name = "ZO_DISK_CACHE_SKIP_SIZE", default = 0)]
+    pub skip_size: usize,
+    // MB, when cache is full will release how many data once time, default is 1% of max_size
+    #[env_config(name = "ZO_DISK_CACHE_RELEASE_SIZE", default = 0)]
+    pub release_size: usize,
+}
+
+#[derive(EnvConfig)]
 pub struct Log {
     #[env_config(name = "RUST_LOG", default = "info")]
     pub level: String,
-    #[env_config(name = "EVENTS_ENABLED", default = false)]
+    #[env_config(name = "ZO_LOG_FILE", default = "")]
+    pub file: String,
+    #[env_config(name = "ZO_EVENTS_ENABLED", default = false)]
     pub events_enabled: bool,
     #[env_config(
-        name = "EVENTS_AUTH",
+        name = "ZO_EVENTS_AUTH",
         default = "cm9vdEBleGFtcGxlLmNvbTpUZ0ZzZFpzTUZQdzg2SzRK"
     )]
     pub events_auth: String,
     #[env_config(
-        name = "EVENTS_EP",
+        name = "ZO_EVENTS_EP",
         default = "https://api.openobserve.ai/api/debug/events/_json"
     )]
     pub events_url: String,
-    #[env_config(name = "EVENTS_BATCH_SIZE", default = 10)]
+    #[env_config(name = "ZO_EVENTS_BATCH_SIZE", default = 10)]
     pub events_batch_size: usize,
 }
 
@@ -411,7 +452,7 @@ pub struct Sled {
 
 #[derive(EnvConfig)]
 pub struct Dynamo {
-    #[env_config(name = "ZO_DYNAMO_PREFIX", default = "")] // default set to s3 bucket name
+    #[env_config(name = "ZO_META_DYNAMO_PREFIX", default = "")] // default set to s3 bucket name
     pub prefix: String,
     pub file_list_table: String,
     pub stream_stats_table: String,
@@ -487,14 +528,19 @@ pub fn init() -> Config {
         panic!("common config error: {e}");
     }
 
+    // check data path config
+    if let Err(e) = check_path_config(&mut cfg) {
+        panic!("data path config error: {e}");
+    }
+
     // check memeory cache
     if let Err(e) = check_memory_cache_config(&mut cfg) {
         panic!("memory cache config error: {e}");
     }
 
-    // check data path config
-    if let Err(e) = check_path_config(&mut cfg) {
-        panic!("data path config error: {e}");
+    // check disk cache
+    if let Err(e) = check_disk_cache_config(&mut cfg) {
+        panic!("disk cache config error: {e}");
     }
 
     // check etcd config
@@ -532,7 +578,7 @@ fn check_common_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
 
     // HACK instance_name
     if cfg.common.instance_name.is_empty() {
-        cfg.common.instance_name = sys_info::hostname().unwrap();
+        cfg.common.instance_name = sysinfo::System::new().host_name().unwrap();
     }
 
     // HACK for tracing, always disable tracing except ingester and querier
@@ -567,11 +613,9 @@ fn check_common_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
     {
         cfg.common.meta_store_external = true;
     }
-    if cfg.common.meta_store.starts_with("postgres")
-        && cfg.common.meta_store_postgres_dsn.is_empty()
-    {
+    if cfg.common.meta_store.starts_with("postgres") && cfg.common.meta_postgres_dsn.is_empty() {
         return Err(anyhow::anyhow!(
-            "Meta store is PostgreSQL, you must set ZO_META_STORE_POSTGRES_DSN"
+            "Meta store is PostgreSQL, you must set ZO_META_POSTGRES_DSN"
         ));
     }
 
@@ -613,6 +657,12 @@ fn check_path_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
     }
     if !cfg.common.data_db_dir.ends_with('/') {
         cfg.common.data_db_dir = format!("{}/", cfg.common.data_db_dir);
+    }
+    if cfg.common.data_cache_dir.is_empty() {
+        cfg.common.data_cache_dir = format!("{}cache/", cfg.common.data_dir);
+    }
+    if !cfg.common.data_cache_dir.ends_with('/') {
+        cfg.common.data_cache_dir = format!("{}/", cfg.common.data_cache_dir);
     }
     if cfg.common.base_uri.ends_with('/') {
         cfg.common.base_uri = cfg.common.base_uri.trim_end_matches('/').to_string();
@@ -701,6 +751,57 @@ fn check_memory_cache_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn check_disk_cache_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
+    let mut system = sysinfo::System::new();
+    system.refresh_disks_list();
+    let mut disks: Vec<(&str, u64, u64)> = system
+        .disks()
+        .iter()
+        .map(|d| {
+            (
+                d.mount_point().to_str().unwrap(),
+                d.total_space(),
+                d.available_space(),
+            )
+        })
+        .collect();
+    disks.sort_by(|a, b| b.0.cmp(a.0));
+
+    std::fs::create_dir_all(&cfg.common.data_cache_dir).expect("create cache dir success");
+    let cache_dir = Path::new(&cfg.common.data_cache_dir)
+        .canonicalize()
+        .unwrap();
+    let cache_dir = cache_dir.to_str().unwrap();
+    let disk = disks.iter().find(|d| cache_dir.starts_with(d.0));
+    let (disk_total, disk_free) = match disk {
+        Some(d) => (d.1, d.2),
+        None => (0, 0),
+    };
+    cfg.limit.disk_total = disk_total as usize;
+    cfg.limit.disk_free = disk_free as usize;
+    if cfg.disk_cache.max_size == 0 {
+        cfg.disk_cache.max_size = cfg.limit.disk_free / 2; // 50%
+        if cfg.disk_cache.max_size > 1024 * 1024 * 1024 * 100 {
+            cfg.disk_cache.max_size = 1024 * 1024 * 1024 * 100; // 100GB
+        }
+    } else {
+        cfg.disk_cache.max_size *= 1024 * 1024;
+    }
+    if cfg.disk_cache.skip_size == 0 {
+        // will skip the cache when a query need cache great than this value, default is 80% of max_size
+        cfg.disk_cache.skip_size = cfg.disk_cache.max_size / 10 * 8;
+    } else {
+        cfg.disk_cache.skip_size *= 1024 * 1024;
+    }
+    if cfg.disk_cache.release_size == 0 {
+        // when cache is full will release how many data once time, default is 1% of max_size
+        cfg.disk_cache.release_size = cfg.disk_cache.max_size / 100;
+    } else {
+        cfg.disk_cache.release_size *= 1024 * 1024;
+    }
+    Ok(())
+}
+
 fn check_s3_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
     if !cfg.s3.bucket_prefix.is_empty() && !cfg.s3.bucket_prefix.ends_with('/') {
         cfg.s3.bucket_prefix = format!("{}/", cfg.s3.bucket_prefix);
@@ -762,7 +863,6 @@ pub fn get_parquet_compression() -> parquet::basic::Compression {
     }
 }
 
-// 代表用本地disk 模拟 storage
 #[inline]
 pub fn is_local_disk_storage() -> bool {
     CONFIG.common.local_mode && CONFIG.common.local_mode_storage.eq("disk")

@@ -15,3 +15,8 @@
 pub mod file_data;
 pub mod stats;
 pub mod tmpfs;
+
+pub async fn init() -> Result<(), anyhow::Error> {
+    file_data::init().await?;
+    Ok(())
+}

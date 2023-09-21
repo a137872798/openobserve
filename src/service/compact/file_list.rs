@@ -189,7 +189,8 @@ pub async fn run_delete() -> Result<(), anyhow::Error> {
     }
 
     for day in days {
-        let mut t = Utc.datetime_from_str(&format!("{day}T00:00:00Z"), "%Y-%m-%dT%H:%M:%SZ")?;
+        let mut t = DateTime::parse_from_str(&format!("{day}T00:00:00Z"), "%Y-%m-%dT%H:%M:%SZ")?
+            .with_timezone(&Utc);
         for _hour in 0..24 {
             let offset = t.timestamp_micros();
             // 以小时为单位 挨个处理

@@ -16,20 +16,22 @@ use bytes::Bytes;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use std::cmp::max;
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 
-use crate::common::infra::config::CONFIG;
-use crate::common::infra::metrics;
-use crate::common::infra::storage;
+use crate::common::infra::{
+    config::{RwHashMap, CONFIG},
+    metrics, storage,
+};
 
-// 数据文件 
+// 数据文件
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
+static DATA: Lazy<RwHashMap<String, Bytes>> = Lazy::new(Default::default);
 
 // 将文件数据缓存在内存中
 pub struct FileData {
     max_size: usize,
     cur_size: usize,
-    data: LruCache<String, Bytes>,
+    data: LruCache<String, usize>,
 }
 
 impl Default for FileData {
@@ -40,11 +42,7 @@ impl Default for FileData {
 
 impl FileData {
     pub fn new() -> FileData {
-        FileData {
-            max_size: CONFIG.memory_cache.max_size,
-            cur_size: 0,
-            data: LruCache::unbounded(),
-        }
+        FileData::with_capacity(CONFIG.memory_cache.max_size)
     }
 
     pub fn with_capacity(max_size: usize) -> FileData {
@@ -55,16 +53,19 @@ impl FileData {
         }
     }
 
-    // 读取map中的数据
-    pub fn get(&mut self, file: &str) -> Option<Bytes> {
-        self.data.get(file).cloned()
+    pub async fn exist(&mut self, file: &str) -> bool {
+        self.data.get(file).is_some()
     }
 
-    pub fn set(&mut self, file: &str, data: Bytes) -> Result<(), anyhow::Error> {
+    pub async fn get(&self, file: &str) -> Option<Bytes> {
+        DATA.get(file).map(|v| v.value().clone())
+    }
+
+    pub async fn set(&mut self, file: &str, data: Bytes) -> Result<(), anyhow::Error> {
         let data_size = file.len() + data.len();
         if self.cur_size + data_size >= self.max_size {
             log::info!(
-                "File cache is full {}/{}, can't cache {} bytes",
+                "File memory cache is full {}/{}, can't cache {} bytes",
                 self.cur_size,
                 self.max_size,
                 data_size
@@ -77,34 +78,39 @@ impl FileData {
                 if item.is_none() {
                     break;
                 }
-                let (key, val) = item.unwrap();
+                let (key, data_size) = item.unwrap();
+                // remove file from data cache
+                DATA.remove(&key);
                 // metrics
                 let columns = key.split('/').collect::<Vec<&str>>();
                 if columns[0] == "files" {
-                    metrics::QUERY_CACHE_FILES
+                    metrics::QUERY_MEMORY_CACHE_FILES
                         .with_label_values(&[columns[1], columns[3], columns[2]])
                         .dec();
-                    metrics::QUERY_CACHE_USED_BYTES
+                    metrics::QUERY_MEMORY_CACHE_USED_BYTES
                         .with_label_values(&[columns[1], columns[3], columns[2]])
-                        .sub(val.len() as i64);
+                        .sub(data_size as i64);
                 }
-                release_size += key.len() + val.len();
+                release_size += data_size;
                 if release_size >= need_release_size {
                     break;
                 }
             }
             self.cur_size -= release_size;
+            DATA.shrink_to_fit();
         }
 
         self.cur_size += data_size;
-        self.data.put(file.to_string(), data);
+        self.data.put(file.to_string(), data_size);
+        // write file into cache
+        DATA.insert(file.to_string(), data);
         // metrics
         let columns = file.split('/').collect::<Vec<&str>>();
         if columns[0] == "files" {
-            metrics::QUERY_CACHE_FILES
+            metrics::QUERY_MEMORY_CACHE_FILES
                 .with_label_values(&[columns[1], columns[3], columns[2]])
                 .inc();
-            metrics::QUERY_CACHE_USED_BYTES
+            metrics::QUERY_MEMORY_CACHE_USED_BYTES
                 .with_label_values(&[columns[1], columns[3], columns[2]])
                 .add(data_size as i64);
         }
@@ -124,42 +130,49 @@ impl FileData {
     }
 }
 
-// 使用内存来模拟文件数据
-#[inline]
-pub fn get(file: &str) -> Option<Bytes> {
-    // 不支持内存缓存
-    if !CONFIG.memory_cache.enabled {
-        return None;
-    }
-    let mut files = FILES.write().unwrap();
-    files.get(file)
+pub async fn init() -> Result<(), anyhow::Error> {
+    let files = FILES.read().await;
+    _ = files.get("").await;
+    Ok(())
 }
 
 #[inline]
-pub fn exist(file: &str) -> bool {
-    let mut files = FILES.write().unwrap();
-    files.get(file).is_some()
+pub async fn get(file: &str) -> Option<Bytes> {
+    if !CONFIG.memory_cache.enabled {
+        return None;
+    }
+    let files = FILES.read().await;
+    files.get(file).await
+}
+
+#[inline]
+pub async fn exist(file: &str) -> bool {
+    if !CONFIG.memory_cache.enabled {
+        return false;
+    }
+    let mut files = FILES.write().await;
+    files.exist(file).await
 }
 
 // 将数据存储在内存中
 #[inline]
-pub fn set(file: &str, data: Bytes) -> Result<(), anyhow::Error> {
+pub async fn set(file: &str, data: Bytes) -> Result<(), anyhow::Error> {
     if !CONFIG.memory_cache.enabled {
         return Ok(());
     }
-    let mut files = FILES.write().unwrap();
-    files.set(file, data)
+    let mut files = FILES.write().await;
+    files.set(file, data).await
 }
 
 #[inline]
-pub fn stats() -> (usize, usize) {
-    let files = FILES.read().unwrap();
+pub async fn stats() -> (usize, usize) {
+    let files = FILES.read().await;
     files.size()
 }
 
 #[inline]
-pub fn len() -> usize {
-    let files = FILES.read().unwrap();
+pub async fn len() -> usize {
+    let files = FILES.read().await;
     files.data.len()
 }
 
@@ -167,8 +180,7 @@ pub fn len() -> usize {
 pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
     // 数据文件也可以存储在storage
     let data = storage::get(file).await?;
-    // 将数据存储到内存中
-    if let Err(e) = set(file, data.clone()) {
+    if let Err(e) = set(file, data.clone()).await {
         return Err(anyhow::anyhow!(
             "set file {} to memory cache failed: {}",
             file,
@@ -182,48 +194,48 @@ pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_set_file_cache() {
+    #[tokio::test]
+    async fn test_cache_set_file() {
         let mut file_data = FileData::with_capacity(1024);
         let content = Bytes::from("Some text Need to store in cache");
         for i in 0..100 {
             let file_key = format!(
-                "files/default/logs/olympics/2022/10/03/10/6982652937134804993_{}.parquet",
+                "files/default/logs/olympics/2022/10/03/10/6982652937134804993_1_{}.parquet",
                 i
             );
-            let resp = file_data.set(&file_key, content.clone());
+            let resp = file_data.set(&file_key, content.clone()).await;
             assert!(resp.is_ok());
         }
     }
 
-    #[test]
-    fn test_get_file_from_cache() {
+    #[tokio::test]
+    async fn test_cache_get_file() {
         let mut file_data = FileData::default();
-        let file_key = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_1.parquet";
+        let file_key = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_2_1.parquet";
         let content = Bytes::from("Some text");
 
-        file_data.set(file_key, content.clone()).unwrap();
-        assert_eq!(file_data.get(file_key).unwrap(), content);
+        file_data.set(file_key, content.clone()).await.unwrap();
+        assert_eq!(file_data.get(file_key).await.unwrap(), content);
 
-        set(file_key, content.clone()).unwrap();
-        assert!(exist(file_key));
-        assert_eq!(get(file_key).unwrap(), content);
-        assert!(stats().0 > 0);
+        file_data.set(file_key, content.clone()).await.unwrap();
+        assert!(file_data.exist(file_key).await);
+        assert_eq!(file_data.get(file_key).await.unwrap(), content);
+        assert!(file_data.size().0 > 0);
     }
 
-    #[test]
-    fn test_cache_miss() {
+    #[tokio::test]
+    async fn test_cache_miss() {
         let mut file_data = FileData::with_capacity(100);
-        let file_key1 = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_1.parquet";
-        let file_key2 = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_2.parquet";
+        let file_key1 = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_3_1.parquet";
+        let file_key2 = "files/default/logs/olympics/2022/10/03/10/6982652937134804993_3_2.parquet";
         let content = Bytes::from("Some text");
         // set one key
-        file_data.set(file_key1, content.clone()).unwrap();
-        assert_eq!(file_data.get(file_key1).unwrap(), content);
+        file_data.set(file_key1, content.clone()).await.unwrap();
+        assert_eq!(file_data.get(file_key1).await.unwrap(), content);
         // set another key, will release first key
-        file_data.set(file_key2, content.clone()).unwrap();
-        assert_eq!(file_data.get(file_key2).unwrap(), content);
+        file_data.set(file_key2, content.clone()).await.unwrap();
+        assert_eq!(file_data.get(file_key2).await.unwrap(), content);
         // get first key, should get error
-        assert!(file_data.get(file_key1).is_none());
+        assert!(file_data.get(file_key1).await.is_none());
     }
 }

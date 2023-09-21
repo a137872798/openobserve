@@ -96,7 +96,7 @@
     "ok": "Ok",
     "updatenotallowed": "Update not allowed for owner",
     "sendInvite": "Send Invite",
-    "inviteByEmail": "Invite by email. Multiple emails seperated by semicolon(;)",
+    "inviteByEmail": "Invite by email. Multiple emails seperated by semicolon(;) or comma(,)",
     "inviteByEmailHint": "You'll be charged a prorated amount for adding a member.",
     "admin": "admin",
     "member": "member",
@@ -309,6 +309,7 @@
     "editPanel": "Edit Panel",
     "addPanel": "Add Panel",
     "firstColumn": "First Column",
+    "zAxis": "Z-Axis",
     "yAxis": "Y-Axis (Columns)",
     "xAxis": "X-Axis (Row)",
     "otherColumn": "Other Columns",
@@ -398,7 +399,7 @@
     "downloadInvoice": "Download Invoice"
   },
   "message": {
-    "ServerInternalError": "Error: Something wrong went. Internal server error.",
+    "ServerInternalError": "Error: Something went wrong. Internal server error.",
     "SearchSQLNotValid": "Error: Not a valid SQL.",
     "SearchStreamNotFound": "Error: Search stream not found.",
     "FullTextSearchFieldNotFound": "Error: Full text search field not found.",

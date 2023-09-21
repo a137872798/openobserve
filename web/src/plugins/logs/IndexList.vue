@@ -82,7 +82,10 @@
                 class="field-container flex content-center ellipsis q-pl-lg q-pr-sm"
                 :title="props.row.name"
               >
-                <div class="field_label ellipsis">
+                <div
+                  class="field_label ellipsis"
+                  :data-test="`logs-field-list-item-${props.row.name}`"
+                >
                   {{ props.row.name }}
                 </div>
                 <div class="field_overlay">
@@ -139,8 +142,12 @@
                   <div
                     class="flex content-center ellipsis"
                     :title="props.row.name"
+                    :data-test="`log-search-expand-${props.row.name}-field-btn`"
                   >
-                    <div class="field_label ellipsis">
+                    <div
+                      class="field_label ellipsis"
+                      :data-test="`logs-field-list-item-${props.row.name}`"
+                    >
                       {{ props.row.name }}
                     </div>
                     <div class="field_overlay">
@@ -210,7 +217,11 @@
                         :key="value.key"
                       >
                         <q-list dense>
-                          <q-item tag="label" class="q-pr-none">
+                          <q-item
+                            tag="label"
+                            class="q-pr-none"
+                            :data-test="`logs-search-subfield-add-${props.row.name}-${value.key}`"
+                          >
                             <div
                               class="flex row wrap justify-between"
                               style="width: calc(100% - 42px)"
@@ -248,6 +259,7 @@
                                 "
                                 title="Include Term"
                                 round
+                                :data-test="`log-search-subfield-list-equal-${props.row.name}-field-btn`"
                               >
                                 <q-icon>
                                   <EqualIcon></EqualIcon>
@@ -262,6 +274,7 @@
                                 "
                                 title="Exclude Term"
                                 round
+                                :data-test="`log-search-subfield-list-not-equal-${props.row.name}-field-btn`"
                               >
                                 <q-icon>
                                   <NotEqualIcon></NotEqualIcon>
@@ -469,7 +482,7 @@ export default defineComponent({
             };
             parsedSQL.columns.push(ts_col);
           }
-          parsedSQL.where = null;
+
           query_context =
             b64EncodeUnicode(parser.sqlify(parsedSQL).replace(/`/g, '"')) || "";
         } else {
@@ -478,14 +491,47 @@ export default defineComponent({
           let whereClause = "";
           if (parseQuery.length > 1) {
             queryFunctions = "," + parseQuery[0].trim();
-            whereClause = "";
+            whereClause = parseQuery[1].trim();
           } else {
-            whereClause = "";
+            whereClause = parseQuery[0].trim();
           }
+
           query_context =
             `SELECT *${queryFunctions} FROM "` +
             searchObj.data.stream.selectedStream.value +
-            `" `;
+            `" [WHERE_CLAUSE]`;
+
+          if (whereClause.trim() != "") {
+            whereClause = whereClause
+              .replace(/=(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " =")
+              .replace(/>(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " >")
+              .replace(/<(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " <");
+
+            whereClause = whereClause
+              .replace(/!=(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " !=")
+              .replace(/! =(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " !=")
+              .replace(/< =(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " <=")
+              .replace(/> =(?=(?:[^"']*"[^"']*"')*[^"']*$)/g, " >=");
+
+            const parsedSQL = whereClause.split(" ");
+            searchObj.data.stream.selectedStreamFields.forEach((field: any) => {
+              parsedSQL.forEach((node: any, index: any) => {
+                if (node == field.name) {
+                  node = node.replaceAll('"', "");
+                  parsedSQL[index] = '"' + node + '"';
+                }
+              });
+            });
+
+            whereClause = parsedSQL.join(" ");
+
+            query_context = query_context.replace(
+              "[WHERE_CLAUSE]",
+              " WHERE " + whereClause
+            );
+          } else {
+            query_context = query_context.replace("[WHERE_CLAUSE]", "");
+          }
           query_context = b64EncodeUnicode(query_context) || "";
         }
 

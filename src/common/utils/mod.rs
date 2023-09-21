@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod asynchronism;
 pub mod auth;
 pub mod base64;
 pub mod cgroup;

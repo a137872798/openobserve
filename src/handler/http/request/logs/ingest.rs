@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use actix_web::{http, post, web, HttpResponse};
+use actix_web::{http, post, web, HttpRequest, HttpResponse};
 use std::io::Error;
 
+use crate::common::infra::config::CONFIG;
 use crate::common::meta::http::HttpResponse as MetaHttpResponse;
+use crate::handler::http::request::{CONTENT_TYPE_JSON, CONTENT_TYPE_PROTO};
+use crate::service::logs::otlp_http::{logs_json_handler, logs_proto_handler};
 use crate::{
     common::meta::ingestion::{GCPIngestionRequest, KinesisFHRequest},
     service::logs,
@@ -47,10 +50,13 @@ pub async fn bulk(
     let org_id = org_id.into_inner();
     Ok(match logs::bulk::ingest(&org_id, body, **thread_id).await {
         Ok(v) => HttpResponse::Ok().json(v),
-        Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
-            http::StatusCode::BAD_REQUEST.into(),
-            e.to_string(),
-        )),
+        Err(e) => {
+            log::error!("Error processing request: {:?}", e);
+            HttpResponse::BadRequest().json(MetaHttpResponse::error(
+                http::StatusCode::BAD_REQUEST.into(),
+                e.to_string(),
+            ))
+        }
     })
 }
 
@@ -82,10 +88,13 @@ pub async fn multi(
     Ok(
         match logs::multi::ingest(&org_id, &stream_name, body, **thread_id).await {
             Ok(v) => HttpResponse::Ok().json(v),
-            Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
-                http::StatusCode::BAD_REQUEST.into(),
-                e.to_string(),
-            )),
+            Err(e) => {
+                log::error!("Error processing request: {:?}", e);
+                HttpResponse::BadRequest().json(MetaHttpResponse::error(
+                    http::StatusCode::BAD_REQUEST.into(),
+                    e.to_string(),
+                ))
+            }
         },
     )
 }
@@ -121,10 +130,13 @@ pub async fn json(
             // 当处理完毕后才返回
             Ok(v) => HttpResponse::Ok().json(v),
             // 返回错误信息
-            Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
-                http::StatusCode::BAD_REQUEST.into(),
-                e.to_string(),
-            )),
+            Err(e) => {
+                log::error!("Error processing request: {:?}", e);
+                HttpResponse::BadRequest().json(MetaHttpResponse::error(
+                    http::StatusCode::BAD_REQUEST.into(),
+                    e.to_string(),
+                ))
+            }
         },
     )
 }
@@ -165,15 +177,19 @@ pub async fn handle_kinesis_request(
         {
             Ok(v) => {
                 if v.error_message.is_some() {
+                    log::error!("Error processing request: {:?}", v);
                     HttpResponse::BadRequest().json(v)
                 } else {
                     HttpResponse::Ok().json(v)
                 }
             }
-            Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
-                http::StatusCode::BAD_REQUEST.into(),
-                e.to_string(),
-            )),
+            Err(e) => {
+                log::error!("Error processing request: {:?}", e);
+                HttpResponse::BadRequest().json(MetaHttpResponse::error(
+                    http::StatusCode::BAD_REQUEST.into(),
+                    e.to_string(),
+                ))
+            }
         },
     )
 }
@@ -191,15 +207,57 @@ pub async fn handle_gcp_request(
         {
             Ok(v) => {
                 if v.error_message.is_some() {
+                    log::error!("Error processing request: {:?}", v);
                     HttpResponse::BadRequest().json(v)
                 } else {
                     HttpResponse::Ok().json(v)
                 }
             }
-            Err(e) => HttpResponse::BadRequest().json(MetaHttpResponse::error(
-                http::StatusCode::BAD_REQUEST.into(),
-                e.to_string(),
-            )),
+            Err(e) => {
+                log::error!("Error processing request: {:?}", e);
+                HttpResponse::BadRequest().json(MetaHttpResponse::error(
+                    http::StatusCode::BAD_REQUEST.into(),
+                    e.to_string(),
+                ))
+            }
         },
     )
+}
+
+/** LogsIngest */
+#[utoipa::path(
+    context_path = "/api",
+    tag = "Logs",
+    operation_id = "PostLogs",
+    request_body(content = String, description = "ExportLogsServiceRequest", content_type = "application/x-protobuf"),
+    responses(
+        (status = 200, description="Success", content_type = "application/json", body = IngestionResponse, example = json!({"code": 200})),
+        (status = 500, description="Failure", content_type = "application/json", body = HttpResponse),
+    )
+)]
+#[post("/{org_id}/v1/logs")]
+pub async fn otlp_logs_write(
+    org_id: web::Path<String>,
+    thread_id: web::Data<usize>,
+    req: HttpRequest,
+    body: web::Bytes,
+) -> Result<HttpResponse, Error> {
+    let org_id = org_id.into_inner();
+    let content_type = req.headers().get("Content-Type").unwrap().to_str().unwrap();
+    let in_stream_name = req
+        .headers()
+        .get(&CONFIG.grpc.stream_header_key)
+        .map(|header| header.to_str().unwrap());
+    if content_type.eq(CONTENT_TYPE_PROTO) {
+        log::info!("otlp::logs_proto_handler");
+        logs_proto_handler(&org_id, **thread_id, body, in_stream_name).await
+    } else if content_type.starts_with(CONTENT_TYPE_JSON) {
+        log::info!("otlp::logs_json_handler");
+        logs_json_handler(&org_id, **thread_id, body, in_stream_name).await
+    } else {
+        Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
+            http::StatusCode::BAD_REQUEST.into(),
+            "Bad Request".to_string(),
+        )))
+    }
 }

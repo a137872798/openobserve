@@ -24,7 +24,7 @@ pub static STOP_SRV: &str = "ZO_STOP_TCP_UDP";
 
 // 开放udp协议 接收数据 并使用 syslog::ingest 进行处理
 pub async fn udp_server(socket: UdpSocket) {
-    let mut buf_udp = vec![0u8; 1024];
+    let mut buf_udp = vec![0u8; 1472];
     let sender = BROADCASTER.read().await;
     let mut udp_receiver_rx = sender.subscribe();
     loop {
@@ -48,7 +48,7 @@ pub async fn udp_server(socket: UdpSocket) {
 pub async fn tcp_server(listener: TcpListener) {
     let sender = BROADCASTER.read().await;
     let mut tcp_receiver_rx = sender.subscribe();
-    let mut buf_tcp = vec![0u8; 1024];
+    let mut buf_tcp = vec![0u8; 1460];
     loop {
         let (mut stream, _) = listener.accept().await.unwrap();
 

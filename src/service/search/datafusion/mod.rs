@@ -17,12 +17,12 @@ use parquet::{
     arrow::ArrowWriter, file::properties::WriterProperties, format::SortingColumn,
     schema::types::ColumnPath,
 };
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use crate::common::{
     infra::config::{
         get_parquet_compression, CONFIG, PARQUET_BATCH_SIZE, PARQUET_MAX_ROW_GROUP_SIZE,
-        PARQUET_PAGE_SIZE,
+        PARQUET_PAGE_SIZE, SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA,
     },
     meta::functions::ZoFunction,
 };
@@ -33,8 +33,27 @@ pub mod match_udf;
 pub mod regexp_udf;
 pub mod storage;
 mod time_range_udf;
-
 mod transform_udf;
+
+#[derive(PartialEq, Debug)]
+pub enum MemoryPoolType {
+    Greedy,
+    Fair,
+    None,
+}
+
+impl FromStr for MemoryPoolType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "greedy" => Ok(MemoryPoolType::Greedy),
+            "fair" | "" => Ok(MemoryPoolType::Fair), // default is fair
+            "none" | "off" => Ok(MemoryPoolType::None),
+            _ => Err(format!("Invalid memory pool type '{}'", s)),
+        }
+    }
+}
 
 /// The name of the match UDF given to DataFusion.
 pub const MATCH_UDF_NAME: &str = "str_match";
@@ -75,36 +94,38 @@ pub const DEFAULT_FUNCTIONS: [ZoFunction; 6] = [
     },
 ];
 
-
-/*
- 创建一个可以生成arrow格式的writer对象
- */
-pub fn new_writer<'a>(
+pub fn new_parquet_writer<'a>(
     buf: &'a mut Vec<u8>,
     schema: &'a Arc<Schema>,
-    sort_field: Option<&str>,
+    num_rows: u64,
     bf_fields: Option<Vec<&str>>,
 ) -> ArrowWriter<&'a mut Vec<u8>> {
-
-    // 默认基于timestamp排序
-    let sort_column_id = if let Some(v) = sort_field {
-        schema.index_of(v).unwrap()
-    } else {
-        schema.index_of(&CONFIG.common.column_timestamp).unwrap()
-    };
+    let sort_column_id = schema
+        .index_of(&CONFIG.common.column_timestamp)
+        .expect("Not found timestamp field");
     let mut writer_props = WriterProperties::builder()
         .set_compression(get_parquet_compression())
-        .set_write_batch_size(PARQUET_BATCH_SIZE)
-        .set_data_page_size_limit(PARQUET_PAGE_SIZE)
-        .set_max_row_group_size(PARQUET_MAX_ROW_GROUP_SIZE)
+        .set_write_batch_size(PARQUET_BATCH_SIZE) // in bytes
+        .set_data_page_size_limit(PARQUET_PAGE_SIZE) // maximum size of a data page in bytes
+        .set_max_row_group_size(PARQUET_MAX_ROW_GROUP_SIZE) // maximum number of rows in a row group
+        .set_dictionary_enabled(true)
         .set_sorting_columns(Some(
             [SortingColumn::new(sort_column_id as i32, true, false)].to_vec(),
         ));
-    // TODO
+    for field in SQL_FULL_TEXT_SEARCH_FIELDS_EXTRA.iter() {
+        writer_props = writer_props
+            .set_column_dictionary_enabled(ColumnPath::from(vec![field.to_string()]), false);
+    }
     if let Some(fields) = bf_fields {
         for field in fields {
             writer_props = writer_props
                 .set_column_bloom_filter_enabled(ColumnPath::from(vec![field.to_string()]), true);
+            if num_rows > 0 {
+                writer_props = writer_props.set_column_bloom_filter_ndv(
+                    ColumnPath::from(vec![field.to_string()]),
+                    num_rows,
+                );
+            }
         }
     }
     let writer_props = writer_props.build();

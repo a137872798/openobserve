@@ -38,14 +38,17 @@ use tonic::codec::CompressionEncoding;
 use tracing_subscriber::{prelude::*, Registry};
 
 use openobserve::{
-    common::infra::{
-        cluster,
-        config::{CONFIG, USERS, VERSION},
-        ider, metrics, wal,
+    common::{
+        infra::{
+            self, cluster,
+            config::{CONFIG, USERS, VERSION},
+        },
+        meta, migration,
+        utils::{
+            file::set_permission,
+            zo_logger::{self, ZoLogger, EVENT_SENDER},
+        },
     },
-    common::meta,
-    common::migration,
-    common::utils::zo_logger::{self, ZoLogger, EVENT_SENDER},
     handler::{
         grpc::{
             auth::check_auth,
@@ -65,7 +68,7 @@ use openobserve::{
         http::router::*,
     },
     job,
-    service::{db, file_list, router, users},
+    service::{compact, db, file_list, router, users},
 };
 
 #[cfg(feature = "profiling")]
@@ -118,13 +121,28 @@ async fn main() -> Result<(), anyhow::Error> {
     } else if CONFIG.common.tracing_enabled {
         enable_tracing()?;
     } else {
-        env_logger::init_from_env(env_logger::Env::new().default_filter_or(&CONFIG.log.level));
+        let mut log_builder = env_logger::Builder::from_env(
+            env_logger::Env::new().default_filter_or(&CONFIG.log.level),
+        );
+        if !CONFIG.log.file.is_empty() {
+            let target = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(&CONFIG.log.file)
+                .expect(&format!("open log file [{}] error", CONFIG.log.file));
+            log_builder.target(env_logger::Target::Pipe(Box::new(target)));
+        }
+        log_builder.init();
     }
+
     log::info!("Starting OpenObserve {}", VERSION);
     log::info!(
-        "System info: CPU cores {}, MEM total {} MB",
+        "System info: CPU cores {}, MEM total {} MB, Disk total {} GB, free {} GB",
         CONFIG.limit.cpu_num,
-        CONFIG.limit.mem_total / 1024 / 1024
+        CONFIG.limit.mem_total / 1024 / 1024,
+        CONFIG.limit.disk_total / 1024 / 1024 / 1024,
+        CONFIG.limit.disk_free / 1024 / 1024 / 1024,
     );
 
     // init jobs
@@ -133,11 +151,14 @@ async fn main() -> Result<(), anyhow::Error> {
     cluster::register_and_keepalive()
         .await
         .expect("cluster init failed");
-    // init ider  该对象用于生成唯一id  init会产生一个初始id
-    ider::init();
-    // init wal   wal write-ahead-log 防止写入丢失的   目前只是触发Vec/HashMap的初始化
-    wal::init();
-    // init job  开启各种后台任务
+    // init infra
+    infra::init().await.expect("infra init failed");
+
+    // check version upgrade
+    let old_version = db::version::get().await.unwrap_or("v0.0.0".to_string());
+    migration::check_upgrade(&old_version, VERSION).await?;
+
+    // init job
     job::init().await.expect("job init failed");
 
     // gRPC server
@@ -154,7 +175,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .expect("EnrichmentTables cache failed");
 
     // metrics
-    let prometheus = metrics::create_prometheus_handler();
+    let prometheus = infra::metrics::create_prometheus_handler();
 
     // HTTP server
     let thread_id = Arc::new(AtomicU16::new(0));
@@ -225,7 +246,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // leave the cluster
     let _ = cluster::leave().await;
     // flush WAL cache to disk
-    wal::flush_all_to_disk();
+    infra::wal::flush_all_to_disk().await;
     // flush compact offset cache to disk disk
     let _ = db::compact::files::sync_cache_to_db().await;
 
@@ -327,7 +348,7 @@ async fn cli() -> Result<bool, anyhow::Error> {
                         .short('c')
                         .long("component")
                         .help(
-                            "reset data of the component: root, user, alert, dashboard, function",
+                            "reset data of the component: root, user, alert, dashboard, function, stream-stats",
                         ),
                 ),
             clap::Command::new("view")
@@ -338,15 +359,27 @@ async fn cli() -> Result<bool, anyhow::Error> {
                         .long("component")
                         .help("view data of the component: version, user"),
                 ),
-            clap::Command::new("file-list")
+            clap::Command::new("init-dir")
+                .about("init openobserve data dir")
+                .arg(
+                    clap::Arg::new("path")
+                        .short('p')
+                        .long("path")
+                        .help("init this path as data root dir"),
+                ),
+            clap::Command::new("migrate-file-list")
                 .about("migrate file-list from s3 to dynamo db")
                 .arg(
                     clap::Arg::new("prefix")
                         .short('p')
                         .long("prefix")
                         .value_name("prefix")
+                        .required(false)
                         .help("only migrate specified prefix, default is all"),
                 ),
+            clap::Command::new("migrate-file-list-from-dynamo")
+                .about("migrate file-list from dynamo to dynamo db"),
+            clap::Command::new("migrate-meta").about("migrate meta"),
             clap::Command::new("delete-parquet")
                 .about("delete parquet files from s3 and file_list")
                 .arg(
@@ -363,7 +396,24 @@ async fn cli() -> Result<bool, anyhow::Error> {
         return Ok(false);
     }
 
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
+
     let (name, command) = app.subcommand().unwrap();
+    if name == "init-dir" {
+        match command.get_one::<String>("path") {
+            Some(path) => {
+                set_permission(path, 0o777)?;
+                println!("init dir {} succeeded", path);
+            }
+            None => {
+                return Err(anyhow::anyhow!("please set data path"));
+            }
+        }
+        return Ok(true);
+    }
+
+    // init infra, create data dir & tables
+    infra::init().await.expect("infra init failed");
     match name {
         "reset" => {
             let component = command.get_one::<String>("component").unwrap();
@@ -393,6 +443,18 @@ async fn cli() -> Result<bool, anyhow::Error> {
                 "function" => {
                     db::functions::reset().await?;
                 }
+                "stream-stats" => {
+                    // reset stream stats update offset
+                    db::compact::stats::set_offset(0, None).await?;
+                    // reset stream stats table data
+                    infra::file_list::reset_stream_stats().await?;
+                    // load stream list
+                    db::schema::cache().await?;
+                    // update stats from file list
+                    compact::stats::update_stats_from_file_list()
+                        .await
+                        .expect("file list remote calculate stats failed");
+                }
                 _ => {
                     return Err(anyhow::anyhow!("unsupport reset component: {}", component));
                 }
@@ -417,12 +479,21 @@ async fn cli() -> Result<bool, anyhow::Error> {
                 }
             }
         }
-        "file-list" => {
-            let prefix = command.get_one::<String>("prefix").unwrap();
+        "migrate-file-list" => {
+            let prefix = match command.get_one::<String>("prefix") {
+                Some(prefix) => prefix.to_string(),
+                None => "".to_string(),
+            };
             println!("Running migration with prefix: {}", prefix);
-            if !prefix.is_empty() {
-                migration::load_file_list_to_dynamo::load(prefix).await?
-            }
+            migration::file_list::run(&prefix).await?
+        }
+        "migrate-file-list-from-dynamo" => {
+            println!("Running migration from DynamoDB");
+            migration::file_list::run_for_dynamo().await?
+        }
+        "migrate-meta" => {
+            println!("Running migration");
+            migration::meta::run().await?
         }
         "delete-parquet" => {
             let file = command.get_one::<String>("file").unwrap();

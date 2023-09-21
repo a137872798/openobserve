@@ -51,6 +51,7 @@ pub async fn handle_triggers(trigger: Trigger) {
 
         // 取到相关的告警
         Ok(result) => {
+            let key = format!("{}/{}", &trigger.org, &trigger.alert_name);
             if let Some(alert) = result {
 
                 // 代表该告警之前已经在处理中了
@@ -59,6 +60,8 @@ pub async fn handle_triggers(trigger: Trigger) {
                     .contains_key(&trigger.alert_name)
                 {
                     let mut curr_time = TRIGGERS_IN_PROCESS.get_mut(&trigger.alert_name).unwrap();
+                if TRIGGERS_IN_PROCESS.clone().contains_key(&key) {
+                    let mut curr_time = TRIGGERS_IN_PROCESS.get_mut(&key).unwrap();
                     let delay = trigger.timestamp - curr_time.updated_at;
 
                     // 需要更新trigger
@@ -76,13 +79,13 @@ pub async fn handle_triggers(trigger: Trigger) {
                     log::info!("Setting timeout for trigger to {}", expires_at);
                     // 插入到正在处理的容器中
                     TRIGGERS_IN_PROCESS.insert(
-                        trigger.alert_name.clone(),
+                        key.to_owned(),
                         TriggerTimer {
                             updated_at: trigger.timestamp,
                             expires_at,
                         },
                     );
-                    handle_trigger(&trigger.alert_name, alert.frequency).await;
+                    handle_trigger(&key, alert.frequency).await;
                 }
             }
         }
@@ -91,14 +94,20 @@ pub async fn handle_triggers(trigger: Trigger) {
 
 // 处理触发器
 #[cfg_attr(coverage_nightly, no_coverage)]
-async fn handle_trigger(alert_name: &str, frequency: i64) {
+async fn handle_trigger(alert_key: &str, frequency: i64) {
     let mut interval = time::interval(time::Duration::from_secs((frequency * 60) as _));
 
     loop {
         interval.tick().await;
         let loc_triggers = TRIGGERS.clone();
-        let trigger = loc_triggers.get(&alert_name.to_owned()).unwrap();
-        if TRIGGERS_IN_PROCESS.clone().contains_key(alert_name) {
+        let trigger = match loc_triggers.get(&alert_key.to_owned()) {
+            Some(trigger) => trigger,
+            None => {
+                log::info!("Trigger {} not found", alert_key);
+                break;
+            }
+        };
+        if TRIGGERS_IN_PROCESS.clone().contains_key(alert_key) {
             let alert_resp = super::db::alerts::get(
                 &trigger.org,
                 &trigger.stream,
@@ -117,6 +126,7 @@ async fn handle_trigger(alert_name: &str, frequency: i64) {
                         query,
                         aggs: HashMap::new(),
                         encoding: meta::search::RequestEncoding::Empty,
+                        timeout: 0,
                     };
                     // do search   定期监控告警相关的stream
                     match SearchService::search(&trigger.org, alert.stream_type.unwrap(), &req)
