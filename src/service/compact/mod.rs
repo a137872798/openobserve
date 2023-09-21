@@ -33,7 +33,7 @@ pub(crate) static QUEUE_LOCKER: Lazy<Arc<Mutex<bool>>> =
     Lazy::new(|| Arc::new(Mutex::const_new(false)));
 
 /// compactor delete run steps:    在进行数据合并前 先进行删除工作
-/// 在logs模块中发现 json数据 就是按照原样写入到底层文件的  但是不是应该需要转换成 parquet格式吗
+/// 在logs模块中发现 json数据 就是按照原样写入到底层文件的
 pub async fn run_delete() -> Result<(), anyhow::Error> {
     // check data retention     在合并前肯定是想避免处理无用的数据 也就是应当被删除的数据 这里先查看配置 有关数据的保留时长的
     // <= 0 应该就是保留所有数据
@@ -166,7 +166,7 @@ pub async fn run_merge() -> Result<(), anyhow::Error> {
         StreamType::EnrichmentTables,
     ];
 
-    // 遍历所有组织   合并是以org为单位    删除是以stream为单位
+    // 遍历所有组织
     for org_id in orgs {
         // get the working node for the organization
         // 获得之前已经合并到的偏移量 以及进行合并的节点
@@ -210,7 +210,7 @@ pub async fn run_merge() -> Result<(), anyhow::Error> {
             // 处理每个stream
             for stream_name in streams {
                 // check if we are allowed to merge or just skip
-                // 代表所有数据都已经被删除
+                // 正在被删除
                 if db::compact::retention::is_deleting_stream(
                     &org_id,
                     &stream_name,
@@ -230,6 +230,7 @@ pub async fn run_merge() -> Result<(), anyhow::Error> {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 // 使用后台线程执行任务
                 let task = tokio::task::spawn(async move {
+                    // 以stream为单位进行数据合并   (合并时又会先锁定每个小时 然后是每个小时下按照分区键合并)
                     if let Err(e) = merge::merge_by_stream(&org_id, &stream_name, stream_type).await
                     {
                         log::error!(
@@ -252,7 +253,7 @@ pub async fn run_merge() -> Result<(), anyhow::Error> {
         }
     }
 
-    // after compact, compact file list from storage   此时各流可合并的文件都已经合并完毕了  现在要压缩file_list
+    // after compact, compact file list from storage   此时各流可合并的文件都已经合并完毕了  要清理storage上存储的多余的file_list
     if !CONFIG.common.meta_store_external {
         let last_file_list_offset = db::compact::file_list::get_offset().await?;
         if let Err(e) = file_list::run(last_file_list_offset).await {

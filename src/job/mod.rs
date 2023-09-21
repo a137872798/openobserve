@@ -177,10 +177,10 @@ pub async fn init() -> Result<(), anyhow::Error> {
     tokio::task::spawn(async move { files::run().await });   // 定期将wal磁盘文件 和 wal内存文件同步到 storage 并更新file_list 以及通知到集群中其他节点
     tokio::task::spawn(async move { file_list::run().await });  // 将记录file_list变化的wal文件推送到 storage 并定期再加载storage的file_list文件 同步到DB 这样集群中所有节点会最终一致
     tokio::task::spawn(async move { stats::run().await });
-    tokio::task::spawn(async move { compact::run().await });  // 定期压缩数据文件
+    tokio::task::spawn(async move { compact::run().await });  // 定期压缩/删除数据文件和file_list
     tokio::task::spawn(async move { metrics::run().await });
     tokio::task::spawn(async move { prom::run().await });
-    tokio::task::spawn(async move { alert_manager::run().await });
+    tokio::task::spawn(async move { alert_manager::run().await });   // 根据触发器信息 定期监控stream的状况 当满足条件时产生alert并进行通知
 
     // Shouldn't serve request until initialization finishes
     log::info!("Job initialization complete");

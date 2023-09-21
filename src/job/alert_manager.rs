@@ -17,7 +17,9 @@ use tokio::time;
 use crate::common::infra::cluster::is_alert_manager;
 use crate::service;
 
+// 定期触发告警管理器
 pub async fn run() -> Result<(), anyhow::Error> {
+    // 要求当前节点是一个通知节点
     if !is_alert_manager(&super::cluster::LOCAL_NODE_ROLE) {
         return Ok(());
     }

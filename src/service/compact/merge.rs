@@ -51,12 +51,11 @@ pub async fn merge_by_stream(
     let start = std::time::Instant::now();
 
     // get last compacted offset
-    // 获取之前处理到的偏移量  一开始为0
+    // 获取上次合并到的偏移量  默认从0开始
     let (mut offset, _node) =
         db::compact::files::get_offset(org_id, stream_name, stream_type).await;
 
-    // get schema
-    // 获取该stream的 schema
+    // get schema  返回最新schema
     let mut schema = db::schema::get(org_id, stream_name, stream_type).await?;
     // 从schema中获取stream的配置
     let stream_settings = stream::stream_settings(&schema).unwrap_or_default();
@@ -68,6 +67,8 @@ pub async fn merge_by_stream(
     let stream_created = stream::stream_created(&schema).unwrap_or_default();
     std::mem::take(&mut schema.metadata);
     let schema = Arc::new(schema);
+
+    // offset 是微秒为单位的
     if offset == 0 {
         offset = stream_created
     }
@@ -76,7 +77,7 @@ pub async fn merge_by_stream(
         return Ok(()); // no data
     }
 
-    // 创建时间就是偏移量  多条记录的时间戳相同的情况 会有什么影响呢
+    // 进一步转换成纳秒
     let offset = offset;
     let offset_time: DateTime<Utc> = Utc.timestamp_nanos(offset * 1000);
 
@@ -93,7 +94,7 @@ pub async fn merge_by_stream(
         .unwrap()
         .timestamp_micros();
 
-    // check offset  获取当前整点时间
+    // check offset  获取当前整点时间     这2个时间段内的数据文件就适合merge
     let time_now: DateTime<Utc> = Utc::now();
     let time_now_hour = Utc
         .with_ymd_and_hms(
@@ -114,6 +115,9 @@ pub async fn merge_by_stream(
     // 得到的偏移量时间 超过当前时间 不需要处理
     // 如果当前时间 该小时还未结束 需要满足一个特殊条件 才能进行合并
     if offset >= time_now_hour
+        // 如果是最后一个小时  当前时间还需要等待3次 max_file_retention_time
+        // 意思也就是 这是一个新的小时 但是不能立马合并上个小时的文件  至少要等到本地文件先写入storage，写入文件列表，文件列表上传到storage
+        // 同时也告诉我们 数据merge是以小时为单位的
         || (offset_time_hour + Duration::hours(1).num_microseconds().unwrap() == time_now_hour
             && time_now.timestamp_micros() - time_now_hour
                 < Duration::seconds(CONFIG.limit.max_file_retention_time as i64)
@@ -125,13 +129,14 @@ pub async fn merge_by_stream(
     }
 
     // get current hour all files
-    // 获取第一个时间块   00-59
+    // 获取紧挨着offset的第一个小时
     let (partition_offset_start, partition_offset_end) = (
         offset_time_hour,
         offset_time_hour + Duration::hours(1).num_microseconds().unwrap()
             - Duration::seconds(1).num_microseconds().unwrap(),
     );
-    // file_list 相当于一个目录 检索该时间段下所有文件   file_list在集群范围内是同步过的 但是数据文件应该是落在各个节点呀  难道是从storage中拉取吗
+
+    // 从db获取文件列表  因为会从storage同步 所以可以确保准确性 (哪怕是上个小时也等待了 3*max_file_retention_time 的时间 所以可以确保有效性)
     let files = match file_list::query(
         org_id,
         stream_name,
@@ -160,10 +165,11 @@ pub async fn merge_by_stream(
         return Ok(());
     }
 
+    // 现在开始以小时为单位合并数据
     // do partition by partition key
     let mut partition_files_with_size: HashMap<String, Vec<FileKey>> = HashMap::default();
 
-    // 这些是需要合并的文件   将他们按照分区键进行分组
+    // 每次merge的跨度是一个小时  但是数据文件的合并还要考虑分区键   查询也是通过分区键来快速筛选文件的
     for file in files {
         let file_name = file.key.clone();
         // 截取最后一个 / 之前的所有字符 作为前缀  应该是包含分区键的
@@ -175,7 +181,8 @@ pub async fn merge_by_stream(
     // collect stream stats
     let mut stream_stats = StreamStats::default();
 
-    // 按照分区键 遍历每个文件
+
+    // 在考虑分区要素之后 开始合并文件
     for (prefix, files_with_size) in partition_files_with_size.iter_mut() {
         // sort by file size
         // 按照文件大小进行排序  这里的排序很重要 小文件需要先合并
@@ -202,7 +209,7 @@ pub async fn merge_by_stream(
                 break; // no file need to merge
             }
 
-            // delete small files keys & write big files keys, use transaction
+            // delete small files keys & write big files keys, use transaction   保存这些被删除的文件+一个合并后的新文件
             let mut events = Vec::with_capacity(new_file_list.len() + 1);
             events.push(FileKey {
                 key: new_file_name.clone(),
@@ -279,13 +286,14 @@ pub async fn merge_by_stream(
 }
 
 /// merge some small files into one big file, upload to storage, returns the big file key and merged files
+/// 进行文件合并
 async fn merge_files(
     org_id: &str,
     stream_name: &str,
     stream_type: StreamType,
     schema: Arc<Schema>,
     prefix: &str,
-    files_with_size: &Vec<FileKey>,
+    files_with_size: &Vec<FileKey>,  // 同一小时同一分区下 待合并的文件
 ) -> Result<(String, FileMeta, Vec<FileKey>), anyhow::Error> {
 
     // 单文件 不需要合并
@@ -299,7 +307,7 @@ async fn merge_files(
     // 这里遍历所有文件
     for file in files_with_size.iter() {
 
-        // 当参与压缩的文件总大小达到一定程度 就会停止 应该是为了避免单次压缩的文件过多
+        // 当参与压缩的文件总大小达到一定程度 就会停止 应该是为了避免单次压缩时占用的内存太高
         if new_file_size + file.meta.original_size > CONFIG.compact.max_file_size as i64 {
             break;
         }
@@ -319,7 +327,7 @@ async fn merge_files(
         return Ok((String::from(""), FileMeta::default(), Vec::new()));
     }
 
-    // write parquet files into tmpfs
+    // write parquet files into tmpfs   存储到临时目录  在以json写入时使用的是wal文件  现在直接加载parquet文件时 就使用临时目录
     let tmp_dir = cache::tmpfs::Directory::default();
 
     // 遍历本次参与merge的所有文件
@@ -365,10 +373,10 @@ async fn merge_files(
     let schema_latest = schema_versions.last().unwrap();
     let schema_latest_id = schema_versions.len() - 1;
 
-    // widening_schema_evolution 应该是允许schema发生变化    也就是这些合并文件可能对应了不同的schema  需要对schema做一致性处理
+    // 允许schema发生变化 并且有多个schema
     if CONFIG.common.widening_schema_evolution && schema_versions.len() > 1 {
 
-        // 遍历每个待合并文件
+        // 先将文件数据按照最新的schema进行解读
         for file in &new_file_list {
             // get the schema version of the file  找到该文件最后有效的schema
             let schema_ver_id = match db::schema::filter_schema_version_id(
@@ -396,6 +404,8 @@ async fn merge_files(
             let schema = schema_versions[schema_ver_id]
                 .clone()
                 .with_metadata(HashMap::new());
+
+            // 找到类型变化的field
             let mut diff_fields = AHashMap::default();
             let cur_fields = schema.fields();
 
@@ -420,8 +430,9 @@ async fn merge_files(
             }
             let mut buf = Vec::new();
 
-            // 再产生一个临时目录
+            // 再产生一个临时目录 用于存放合并好的文件
             let file_tmp_dir = cache::tmpfs::Directory::default();
+            // datafusion 就是要以目录为单位进行合并的
             let file_data = storage::get(&file.key).await?;
             file_tmp_dir.set(&file.key, file_data)?;
 
@@ -430,7 +441,7 @@ async fn merge_files(
                 file_tmp_dir.name(),
                 &mut buf,
                 Arc::new(schema),
-                diff_fields,
+                diff_fields,  // 要转换成最新schema对应的类型
                 FileType::PARQUET,  // 表示该目录下文件的格式
             )
             .await
@@ -438,7 +449,7 @@ async fn merge_files(
                 DataFusionError::Plan(format!("convert_parquet_file {}, err: {}", &file.key, e))
             })?;
 
-            // replace the file in tmpfs  使用buf的数据替换掉原来从文件中读取的数据
+            // replace the file in tmpfs  使用新schema的数据替换旧数据
             tmp_dir.set(&file.key, buf.into())?;
         }
     }
@@ -453,7 +464,7 @@ async fn merge_files(
 
     let mut buf = Vec::new();
 
-    // 此时所有数据已经以parquet格式存储在buf中了
+    // 现在将该目录下所有数据文件进行合并
     let mut new_file_meta =
         datafusion::exec::merge_parquet_files(tmp_dir.name(), &mut buf, schema, stream_type)
             .await?;
@@ -473,7 +484,7 @@ async fn merge_files(
         new_file_meta.compressed_size,
     );
 
-    // upload file  将合并后的新parquet文件推送到远端存储
+    // upload file  直接将合并后的文件上传到 storage
     match storage::put(&new_file_key, buf.into()).await {
         Ok(_) => Ok((new_file_key, new_file_meta, new_file_list)),
         Err(e) => Err(e),

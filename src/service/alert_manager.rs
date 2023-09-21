@@ -24,6 +24,7 @@ use crate::common::utils::notification::send_notification;
 use crate::service::search as SearchService;
 use crate::service::triggers;
 
+// 处理trigger
 #[cfg_attr(coverage_nightly, no_coverage)]
 pub async fn run() -> Result<(), anyhow::Error> {
     for trigger in TRIGGERS.iter() {
@@ -35,6 +36,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+// 挨个处理trigger
 #[cfg_attr(coverage_nightly, no_coverage)]
 pub async fn handle_triggers(trigger: Trigger) {
     match super::db::alerts::get(
@@ -46,14 +48,20 @@ pub async fn handle_triggers(trigger: Trigger) {
     .await
     {
         Err(_) => log::error!("[ALERT MANAGER] Error fetching alert"),
+
+        // 取到相关的告警
         Ok(result) => {
             if let Some(alert) = result {
+
+                // 代表该告警之前已经在处理中了
                 if TRIGGERS_IN_PROCESS
                     .clone()
                     .contains_key(&trigger.alert_name)
                 {
                     let mut curr_time = TRIGGERS_IN_PROCESS.get_mut(&trigger.alert_name).unwrap();
                     let delay = trigger.timestamp - curr_time.updated_at;
+
+                    // 需要更新trigger
                     if delay > 0 {
                         log::info!(
                             "Updating timeout for trigger to {}",
@@ -66,6 +74,7 @@ pub async fn handle_triggers(trigger: Trigger) {
                     let expires_at =
                         Utc::now().timestamp_micros() + get_micros_from_min(alert.duration); // * 60 * 1000000;
                     log::info!("Setting timeout for trigger to {}", expires_at);
+                    // 插入到正在处理的容器中
                     TRIGGERS_IN_PROCESS.insert(
                         trigger.alert_name.clone(),
                         TriggerTimer {
@@ -80,6 +89,7 @@ pub async fn handle_triggers(trigger: Trigger) {
     }
 }
 
+// 处理触发器
 #[cfg_attr(coverage_nightly, no_coverage)]
 async fn handle_trigger(alert_name: &str, frequency: i64) {
     let mut interval = time::interval(time::Duration::from_secs((frequency * 60) as _));
@@ -108,17 +118,19 @@ async fn handle_trigger(alert_name: &str, frequency: i64) {
                         aggs: HashMap::new(),
                         encoding: meta::search::RequestEncoding::Empty,
                     };
-                    // do search
+                    // do search   定期监控告警相关的stream
                     match SearchService::search(&trigger.org, alert.stream_type.unwrap(), &req)
                         .await
                     {
                         Ok(res) => {
                             if !res.hits.is_empty() {
                                 let record = res.hits.first().unwrap().as_object().unwrap();
+                                // 判断是否会产生告警
                                 if alert.condition.evaluate(record.clone()) {
                                     let curr_ts = Utc::now().timestamp_micros();
                                     let mut local_trigger = trigger.clone();
 
+                                    // 发送告警事件
                                     if trigger.last_sent_at == 0
                                         || (trigger.last_sent_at > 0
                                             && curr_ts - trigger.last_sent_at

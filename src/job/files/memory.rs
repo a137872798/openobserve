@@ -71,6 +71,7 @@ async fn move_files_to_storage() -> Result<(), anyhow::Error> {
         log::info!("[JOB] convert memory file: {}", file);
 
         // check if we are allowed to ingest or just delete the file
+        // 代表正在被删除
         if db::compact::retention::is_deleting_stream(&org_id, &stream_name, stream_type, None) {
             log::info!(
                 "[JOB] the stream [{}/{}/{}] is deleting, just delete file: {}",

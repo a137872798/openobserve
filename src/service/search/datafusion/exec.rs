@@ -841,7 +841,7 @@ fn merge_rewrite_sql(sql: &str, schema: Arc<Schema>) -> Result<String> {
     Ok(sql)
 }
 
-// 从某个文件读取数据 转换成parquet格式
+// 从某个文件读取数据 转换成arrow格式
 pub async fn convert_parquet_file(
     session_id: &str,
     buf: &mut Vec<u8>,

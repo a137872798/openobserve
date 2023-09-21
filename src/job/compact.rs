@@ -20,6 +20,8 @@ use crate::service;
 
 // 定期压缩数据文件
 pub async fn run() -> Result<(), anyhow::Error> {
+
+    // 只有压缩节点需要进行该任务
     if !is_compactor(&super::cluster::LOCAL_NODE_ROLE) {
         return Ok(());
     }
@@ -28,13 +30,17 @@ pub async fn run() -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
+    // 删除过期的数据文件和产生新的file_list
     tokio::task::spawn(async move { run_delete().await });
+    // 合并数据文件和file_list
     tokio::task::spawn(async move { run_merge().await });
+    // 将合并文件时的偏移量记录到DB中
     tokio::task::spawn(async move { run_sync_to_db().await });
 
     Ok(())
 }
 
+// 在压缩数据文件前 先删除过期文件
 async fn run_delete() -> Result<(), anyhow::Error> {
     let mut interval = time::interval(time::Duration::from_secs(CONFIG.compact.interval));
     interval.tick().await; // trigger the first run

@@ -14,7 +14,7 @@
 
 use crate::common::infra::db as infra_db;
 
-// 这应该是描述 所有stream此时的压缩偏移量
+// stream的数据文件有一个 压缩的偏移量  而针对storage的file_list 也有一个压缩偏移量  都是记录压缩进度的
 pub async fn get_offset() -> Result<i64, anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = "/compact/file_list/offset";
@@ -34,7 +34,7 @@ pub async fn set_offset(offset: i64) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-// 标记某个stream这些天的数据已经被删除了
+// 标记某些天的 文件清单已经被删除了   这样这些文件清单就不用merge了
 pub async fn set_delete(key: &str) -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     let key = format!("/compact/file_list/delete/{key}");

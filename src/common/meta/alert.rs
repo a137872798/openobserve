@@ -31,7 +31,7 @@ pub struct Alert {
     pub query: Option<Query>,
     pub condition: Condition,  // 描述产生告警的条件
     pub duration: i64,
-    pub frequency: i64,
+    pub frequency: i64,  // 告警频率
     pub time_between_alerts: i64,
     pub destination: String,
     #[serde(default)]  // true 代表针对实时进入的数据流进行检测

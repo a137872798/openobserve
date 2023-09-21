@@ -32,7 +32,9 @@ use crate::service::db;
 
 // 当数据文件完成merge后 需要处理file_list
 pub async fn run(offset: i64) -> Result<(), anyhow::Error> {
+    // 合并file_list
     run_merge(offset).await?;
+    // 随着数据文件的删除 某些file_list也会被标记成删除  现在进行物理清除
     run_delete().await?;
     Ok(())
 }
@@ -41,9 +43,11 @@ pub async fn run(offset: i64) -> Result<(), anyhow::Error> {
 /// merge all small file list keys in this hour to a single file and upload to storage
 /// delete all small file list keys in this hour from storage
 /// node should load new file list from storage
-/// 处理file_list
+/// 将file_list的数据进行合并
 pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
     let time_now: DateTime<Utc> = Utc::now();
+
+    // 获取当前整点时间
     let time_now_hour = Utc
         .with_ymd_and_hms(
             time_now.year(),
@@ -56,7 +60,6 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         .unwrap()
         .timestamp_micros();
 
-    // offset 代表此时已经合并到的文件的时间
     let mut offset = offset;
     if offset == 0 {
         // get earilest date from schema
@@ -78,7 +81,7 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         }
     }
 
-    // still not found, just return   没有数据文件 file_list也应当为空
+    // still not found, just return
     if offset == 0 {
         log::info!("[COMPACT] file_list no stream, no need to compact");
         return Ok(()); // no stream
@@ -88,7 +91,7 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
-    // 生成偏移量的时间
+    // 生成file_list的起始时间
     let offset_time: DateTime<Utc> = Utc.timestamp_nanos(offset * 1000);
     let offset_time_hour = Utc
         .with_ymd_and_hms(
@@ -102,7 +105,7 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         .unwrap()
         .timestamp_micros();
 
-    // check compact is done  这里查询的是file_list的merge偏移量
+    // check compact is done  直接从DB查找数据文件的合并偏移量
     let offsets = db::compact::files::list_offset().await?;
     // 没有偏移量信息 也就是没有stream数据 直接返回
     if offsets.is_empty() {
@@ -111,8 +114,9 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
     // compact offset already is next hour, we need fix it, get the latest compact offset
     let mut is_waiting_streams = false;
 
-    // 代表流目前的处理进度 还没赶上 file_list一开始设定的合并偏移量
+    // 遍历每个stream此时数据文件的合并偏移量
     for (key, val) in offsets {
+        // 代表这个流 合并的进度还不及file_list
         if (val - Duration::hours(1).num_microseconds().unwrap()) < offset {
             log::info!("[COMPACT] file_list is waiting for stream: {key}, offset: {val}");
             is_waiting_streams = true;
@@ -120,15 +124,15 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         }
     }
 
-    // file_list的合并工作还是要做 只是不会更新file_list的偏移量了
+    // 某些流的数据合并 还没有赶上file_list的起点
     if is_waiting_streams {
-        // compact zero hour for daily partiton  获取当前时间的整点
+        // compact zero hour for daily partiton   file_list 分为以天为单位和以小时为单位
         let time_zero_hour = Utc
             .with_ymd_and_hms(time_now.year(), time_now.month(), time_now.day(), 0, 0, 0)
             .unwrap()
             .timestamp_micros();
 
-        // 处理当天0点的
+        // 处理天的
         merge_file_list(time_zero_hour).await?;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         // compact last hour, because it just done compaction that generated a lot of small file_list files
@@ -150,11 +154,11 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         // compact current hour, because it continue to generate small file_list files  合并当前小时的
         merge_file_list(time_now_hour).await?;
-        // it waiting, no need update offset
+        // it waiting, no need update offset   因为某些stream数据文件还未合并好 所以不能推进偏移量
         return Ok(());
     }
 
-    // compact zero hour for daily partiton
+    // compact zero hour for daily partiton   直接处理整天的
     let offset_zero_hour = Utc
         .with_ymd_and_hms(
             offset_time.year(),
@@ -169,15 +173,15 @@ pub async fn run_merge(offset: i64) -> Result<(), anyhow::Error> {
     merge_file_list(offset_zero_hour).await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // compact offset file list  处理刚刚merge过的stream对应的时间
+    // compact offset file list
     merge_file_list(offset).await?;
 
-    // write new sync offset  更新偏移量
+    // write new sync offset  因为stream已经赶上了file_list 所以可以推进一小时
     offset = offset_time_hour + Duration::hours(1).num_microseconds().unwrap();
     db::compact::file_list::set_offset(offset).await
 }
 
-// 获得之前被标记成已经删除的file_list 文件    可能因为他们的数据文件已经过期被删除了 所以他们也不需要存在了
+// 对过期的file_list进行物理删除
 pub async fn run_delete() -> Result<(), anyhow::Error> {
     let days = db::compact::file_list::list_delete().await?;
     if days.is_empty() {
@@ -202,7 +206,7 @@ pub async fn run_delete() -> Result<(), anyhow::Error> {
 
 /// merge and delete the small file list keys in this hour from etcd
 /// upload new file list into storage
-/// 将截至到该时间点的file_list合并
+/// 将以offset为前缀的所有file_list进行合并
 async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
     let lock_key = format!("compact/file_list/{offset}");
     let locker = dist_lock::lock(&lock_key, CONFIG.etcd.command_timeout).await?;
@@ -227,7 +231,7 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
     let key = format!("file_list{offset_prefix}");
     log::info!("[COMPACT] file_list is merging, prefix: {key}");
 
-    // 获取该时间段下所有file_list文件
+    // 找到该前缀相关的所有file_list文件
     let file_list = storage::list(&key).await?;
 
     // 不需要处理
@@ -245,6 +249,8 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
         Arc::new(RwLock::new(AHashMap::default()));
     let semaphore = std::sync::Arc::new(Semaphore::new(CONFIG.limit.file_move_thread_num));
     let mut tasks = Vec::new();
+
+    // 每条线程处理一部分
     for file in file_list.clone() {
         let filter_file_keys = filter_file_keys.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
@@ -252,7 +258,7 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
             tokio::task::spawn(async move {
                 log::info!("[COMPACT] file_list merge small files: {}", file);
 
-                // 在file_list空间的每个file_list文件内存储了一组文件信息
+                // 拉取file_list文件
                 let data = match storage::get(&file).await {
                     Ok(val) => val,
                     Err(err) => {
@@ -290,10 +296,9 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
                     };
                     let mut filter_file_keys = filter_file_keys.write().await;
 
-                    // 记得每次file_list有变化时 都是一个全量数据生成新的zst文件 并写入到storage
-                    // 简单来看其实就是写入容器 只是发现是deleted时  覆盖了一下
                     match filter_file_keys.get(&item.key) {
                         Some(_) => {
+                            // 这里其实是覆盖
                             if item.deleted {
                                 filter_file_keys.insert(item.key.clone(), item);
                             }
@@ -328,7 +333,7 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
     let id = ider::generate();
     let file_name = format!("file_list{offset_prefix}{id}.json.zst");
 
-    // 将多个file_list整合后 产生一个新文件
+    // 产生新文件 只保留了有效的数据文件
     let mut buf = zstd::Encoder::new(Vec::new(), 3)?;
     let mut has_content = false;
     let filter_file_keys = filter_file_keys.read().await;
@@ -355,6 +360,7 @@ async fn merge_file_list(offset: i64) -> Result<(), anyhow::Error> {
             }
         }
     } else {
+        // 当所有数据文件都被删除后 本次合并的结果没有内容 但是也作为已经合并的标志 同时删除参与合并的旧文件
         true
     };
     if new_file_ok {

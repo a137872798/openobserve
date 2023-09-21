@@ -762,7 +762,7 @@ pub fn get_parquet_compression() -> parquet::basic::Compression {
     }
 }
 
-// 检查是否使用本地模式 并且将数据存储在磁盘上
+// 代表用本地disk 模拟 storage
 #[inline]
 pub fn is_local_disk_storage() -> bool {
     CONFIG.common.local_mode && CONFIG.common.local_mode_storage.eq("disk")

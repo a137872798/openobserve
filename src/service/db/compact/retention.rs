@@ -57,10 +57,11 @@ pub async fn delete_stream(
         return Ok(()); // already in cache, just skip
     }
 
+    // 标记一个删除任务
     let db_key = format!("/compact/delete/{key}");
     CACHE.insert(key);
 
-    // 为了避免数据丢失 写入db
+    // 为了避免数据丢失 写入db  这里value是OK 代表只是先打一个标记 之后会设置执行删除任务的node
     Ok(db.put(&db_key, "OK".into(), infra_db::NEED_WATCH).await?)
 }
 

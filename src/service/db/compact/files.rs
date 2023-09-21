@@ -53,7 +53,7 @@ pub async fn get_offset(org_id: &str, stream_name: &str, stream_type: StreamType
     (offset, node)
 }
 
-// 这个是file merge时使用的偏移量
+// 更新数据文件此时merge的起始偏移量 或者说小时
 pub async fn set_offset(
     org_id: &str,
     stream_name: &str,
@@ -79,7 +79,7 @@ pub async fn del_offset(
         .map_err(Into::into)
 }
 
-// 这个是file_list merge时使用的偏移量
+// 数据文件的压缩偏移量 直接从DB查找
 pub async fn list_offset() -> Result<Vec<(String, i64)>, anyhow::Error> {
     let mut items = Vec::new();
     let db = &infra_db::DEFAULT;
@@ -100,7 +100,7 @@ pub async fn list_offset() -> Result<Vec<(String, i64)>, anyhow::Error> {
     Ok(items)
 }
 
-// 将cache 同步到db
+// 将刚才推进的偏移量记录到DB中
 pub async fn sync_cache_to_db() -> Result<(), anyhow::Error> {
     let db = &infra_db::DEFAULT;
     for item in CACHES.clone().iter() {
