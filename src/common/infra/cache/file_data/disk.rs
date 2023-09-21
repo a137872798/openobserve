@@ -29,6 +29,8 @@ use crate::common::{
 
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
 
+// 存在一个缓存目录 下面的文件被理解为文件缓存  应该是相比远端storage的本地文件吧
+
 pub struct FileData {
     max_size: usize,
     cur_size: usize,
@@ -57,6 +59,7 @@ impl FileData {
     }
 
     pub async fn load(&mut self) -> Result<(), anyhow::Error> {
+        // 扫描目录下的所有文件 已存在的文件就被认为是(缓存)
         let wal_dir = Path::new(&self.root_dir).canonicalize().unwrap();
         let files = scan_files(&self.root_dir);
         for file in files {
@@ -109,6 +112,7 @@ impl FileData {
                 let (key, data_size) = item.unwrap();
                 // delete file from local disk
                 let file_path = format!("{}{}", self.root_dir, key);
+                // 与memory的区别在于 这里会物理删除文件
                 fs::remove_file(&file_path).await?;
                 // metrics
                 let columns = key.split('/').collect::<Vec<&str>>();
@@ -128,6 +132,7 @@ impl FileData {
             self.cur_size -= release_size;
         }
 
+        // 将数据写入本地文件
         self.cur_size += data_size;
         self.data.put(file.to_string(), data_size);
         // write file into local disk
@@ -178,6 +183,7 @@ pub async fn exist(file: &str) -> bool {
 
 #[inline]
 pub async fn set(file: &str, data: Bytes) -> Result<(), anyhow::Error> {
+    // is_local_disk_storage 为true 代表已经使用本地磁盘模拟 storage了  文件缓存就没必要了
     if !CONFIG.disk_cache.enabled || is_local_disk_storage() {
         return Ok(());
     }
@@ -199,6 +205,7 @@ pub async fn len() -> usize {
 
 #[inline]
 pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
+    // 将从storage拉取的文件 存储存储到本地
     let data = storage::get(file).await?;
     if let Err(e) = set(file, data.clone()).await {
         return Err(anyhow::anyhow!(

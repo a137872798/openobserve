@@ -31,6 +31,7 @@ static DATA: Lazy<RwHashMap<String, Bytes>> = Lazy::new(Default::default);
 pub struct FileData {
     max_size: usize,
     cur_size: usize,
+    // 为了避免缓存占用过高内存 使用了一个lru算法
     data: LruCache<String, usize>,
 }
 
@@ -63,6 +64,8 @@ impl FileData {
 
     pub async fn set(&mut self, file: &str, data: Bytes) -> Result<(), anyhow::Error> {
         let data_size = file.len() + data.len();
+
+        // 代表内存不够用 需要释放写文件数据
         if self.cur_size + data_size >= self.max_size {
             log::info!(
                 "File memory cache is full {}/{}, can't cache {} bytes",
@@ -71,6 +74,7 @@ impl FileData {
                 data_size
             );
             // cache is full, need release some space
+            // 代表需要释放多少内存
             let need_release_size = max(CONFIG.memory_cache.release_size, data_size * 100);
             let mut release_size = 0;
             loop {
@@ -100,6 +104,7 @@ impl FileData {
             DATA.shrink_to_fit();
         }
 
+        // 这里是正常的插入
         self.cur_size += data_size;
         self.data.put(file.to_string(), data_size);
         // write file into cache
@@ -178,7 +183,7 @@ pub async fn len() -> usize {
 
 #[inline]
 pub async fn download(file: &str) -> Result<Bytes, anyhow::Error> {
-    // 数据文件也可以存储在storage
+    // 相比disk将从storage拉取的文件存储在本地文件   memory选择将数据存在内存中
     let data = storage::get(file).await?;
     if let Err(e) = set(file, data.clone()).await {
         return Err(anyhow::anyhow!(

@@ -100,6 +100,8 @@ pub async fn get_search_in_memory_files(
     }
 
     let mut files = Vec::new();
+
+    // 正在写入的内存文件
     for file in MANAGER.data.iter() {
         for (_key, file) in file.read().await.iter() {
             if file.org_id == org_id
@@ -113,6 +115,7 @@ pub async fn get_search_in_memory_files(
         }
     }
 
+    // 已经 sync的内存文件
     let prefix = format!("files/{org_id}/{stream_type}/{stream_name}/");
     for (file, data) in MEMORY_FILES.list(&prefix).await.iter() {
         files.push((file.to_owned(), data.to_vec()));
@@ -121,6 +124,7 @@ pub async fn get_search_in_memory_files(
     Ok(files)
 }
 
+// 服务停止时触发
 pub async fn flush_all_to_disk() {
     for data in MANAGER.data.iter() {
         for (_, file) in data.read().await.iter() {
@@ -128,6 +132,7 @@ pub async fn flush_all_to_disk() {
         }
     }
 
+    // 为了防止数据丢失  内存文件在关闭前会写入磁盘
     for (file, data) in MEMORY_FILES.list("").await.iter() {
         let file_path = format!("{}{}", CONFIG.common.data_wal_dir, file);
         let mut f = OpenOptions::new()

@@ -31,6 +31,7 @@ pub static LOCAL_CACHE: Lazy<Box<dyn ObjectStore>> = Lazy::new(local_cache);
 
 fn default() -> Box<dyn ObjectStore> {
     if is_local_disk_storage() {
+        // 使用本地磁盘 模拟storage
         std::fs::create_dir_all(&CONFIG.common.data_stream_dir)
             .expect("create stream data dir success");
         Box::<local::Local>::default()

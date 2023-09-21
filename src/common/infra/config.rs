@@ -359,13 +359,14 @@ pub struct MemoryCache {
     pub enabled: bool,
     #[env_config(name = "ZO_MEMORY_CACHE_CACHE_LATEST_FILES", default = false)]
     pub cache_latest_files: bool,
-    // MB, default is 50% of system memory
+    // MB, default is 50% of system memory  缓存最多占用的内存量
     #[env_config(name = "ZO_MEMORY_CACHE_MAX_SIZE", default = 0)]
     pub max_size: usize,
     // MB, will skip the cache when a query need cache great than this value, default is 80% of max_size
     #[env_config(name = "ZO_MEMORY_CACHE_SKIP_SIZE", default = 0)]
     pub skip_size: usize,
     // MB, when cache is full will release how many data once time, default is 1% of max_size
+    // 当内存满了 需要释放的内存量
     #[env_config(name = "ZO_MEMORY_CACHE_RELEASE_SIZE", default = 0)]
     pub release_size: usize,
     // MB, default is 50% of system memory
