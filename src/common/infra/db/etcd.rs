@@ -386,6 +386,8 @@ where
             if stopper() {
                 break;
             }
+
+            // 代表每隔该时长 发送一次续约请求
             time::sleep(time::Duration::from_secs(ttl_keep_alive)).await;
             match keeper.keep_alive().await {
                 Ok(_) => {}

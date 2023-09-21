@@ -23,7 +23,7 @@ pub mod tmpfs;
 // 描述几种存储类型
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageType {
-    FsMemory,  // fsm   代表先走内存缓存 没有再走文件
+    FsMemory,  // fsm   检查OO是否开启了内存缓存 如果开启了会使用这个storage 在datafusion时就会使用不同的ObjectStore 从而利用内存缓存
     FsNoCache, // fsn   直接走文件
     Tmpfs,     //       使用临时文件
 }

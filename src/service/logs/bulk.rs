@@ -132,11 +132,11 @@ pub async fn ingest(
 
             // Start get stream alerts
             let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
-            // 获取该stream上已经产生的告警检测对象 之后对数据流进行检测
+            // 获取该stream上已经产生的告警检测对象 之后对数据流进行检测  注意这个告警是实时的
             crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
             // End get stream alert
 
-            // 加载stream的分区信息
+            // stream数据是按照分区存储的  并且在merge/查询时也要考虑分区
             if !stream_partition_keys_map.contains_key(&stream_name.clone()) {
 
                 // 检查和读取schema信息
@@ -167,7 +167,7 @@ pub async fn ingest(
             // 为stream准备插入的容器
             stream_data_map
                 .entry(stream_name.clone())
-                .or_insert(BulkStreamData {
+                .or_insert(BulkStreamData {   // 二级key是分区键
                     data: AHashMap::new(),
                 });
         } else {
@@ -246,6 +246,7 @@ pub async fn ingest(
                         continue;
                     }
                 },
+                // 否则会使用当前时间
                 None => Utc::now().timestamp_micros(),
             };
             // check ingestion time   这个应该是数据允许被摄取的时间?  避免数据被过早摄取
@@ -278,7 +279,7 @@ pub async fn ingest(
                 json::Value::Number(timestamp.into()),
             );
 
-            // 获取stream的分区键
+            // 获取所有分区键 一条记录中的多个key 会影响分区
             let partition_keys: Vec<String> = match stream_partition_keys_map.get(&stream_name) {
                 Some((_, partition_keys)) => partition_keys.to_vec(),
                 None => vec![],
@@ -287,7 +288,7 @@ pub async fn ingest(
             // only for bulk insert  RecordStatus 记录了成功/失败的数量
             let mut status = RecordStatus::default();
 
-            // 将记录存储到buf中   buf的key中包含了分区键
+            // 对数据处理后写入buf  并且进行告警检测  如果得到trigger 就代表触发了一个告警
             let local_trigger = super::add_valid_record(
                 StreamMeta {
                     org_id: org_id.to_string(),
@@ -338,7 +339,7 @@ pub async fn ingest(
 
     // 遍历每个stream的数据块
     for (stream_name, stream_data) in stream_data_map {
-        // check if we are allowed to ingest   如果该stream已经被标记成删除了  忽略
+        // check if we are allowed to ingest   当前stream正被删除
         if db::compact::retention::is_deleting_stream(org_id, &stream_name, StreamType::Logs, None)
         {
             log::warn!("stream [{stream_name}] is being deleted");

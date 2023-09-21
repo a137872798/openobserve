@@ -293,7 +293,7 @@ async fn cache_parquet_files(files: &[FileKey]) -> Result<Vec<String>, Error> {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let task: tokio::task::JoinHandle<Option<String>> = tokio::task::spawn(async move {
 
-            // 表示文件数据还没有加载到内存
+            // 表示文件数据还没有加载到内存   因为某些parquet文件可能已经提前加载到内存了  就不需要重复拉取了
             if !file_data::exist(&file_name) {
                 // 从 ObjectStore读取数据 拉取到内存
                 if let Err(e) = file_data::download(&file_name).await {

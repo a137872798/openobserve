@@ -36,7 +36,7 @@ use crate::service::{
 /**
  * 有关磁盘要执行的定期任务
  */
-pub async fn run() -> Result<(), anyhow::Error> {
+pub async fn () -> Result<(), anyhow::Error> {
     let mut interval = time::interval(time::Duration::from_secs(CONFIG.limit.file_push_interval));
     interval.tick().await; // trigger the first run
     loop {

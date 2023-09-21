@@ -321,7 +321,7 @@ pub async fn check_for_schema(
         };
     }
 
-    // 此时新记录的schema 与 stream的schema已经不一样了    当超过req_cols_per_record_limit时  返回不兼容
+    // 不允许插入的json字段过多
     if inferred_schema.fields.len() > CONFIG.limit.req_cols_per_record_limit {
         //return (false, None, inferred_schema.fields().to_vec());
         return SchemaEvolution {

@@ -98,33 +98,39 @@ impl std::fmt::Display for Role {
     }
 }
 
-/// Register and keepalive the node to cluster
+/// Register and keepalive the node to cluster  将当前节点注册到集群
 pub async fn register_and_keepalive() -> Result<()> {
     if CONFIG.common.local_mode {
+        // 解析当前节点的角色
         let roles = load_local_node_role();
+        // 单机模式 仅支持 ALL角色
         if !is_single_node(&roles) {
             panic!("For local mode only single node deployment is allowed!");
         }
-        // cache local node
+        // cache local node  产生node对象
         NODES.insert(LOCAL_NODE_UUID.clone(), load_local_mode_node());
         return Ok(());
     }
 
-    // 此时完成了本节点到集群的注册工作
+    // 将节点注册到集群
     if let Err(e) = register().await {
         log::error!("[CLUSTER] Register to cluster failed: {}", e);
         return Err(e);
     }
 
-    // keep alive  现在开始创建心跳任务 需要能让集群观测到本节点
+    // keep alive  因为节点信息是绑定ttl的  需要定期续约
     tokio::task::spawn(async move {
         loop {
             // 当本节点变成下线状态后 就会停止发送心跳
             if is_offline() {
                 break;
             }
+
+            // 获取之前使用的ttl id
             let lease_id = unsafe { LOCAL_NODE_KEY_LEASE_ID };
             let ret = etcd::keepalive_lease_id(lease_id, LOCAL_NODE_KEY_TTL, is_offline).await;
+
+            // 代表检测到不再需要续约
             if ret.is_ok() {
                 break;
             }
@@ -144,7 +150,7 @@ pub async fn register_and_keepalive() -> Result<()> {
                 break;
             }
             log::error!("[CLUSTER] keepalive lease id expired or revoked, set node online again.");
-            // get new lease id   获取一个新的续约id  此时也相当于发送了一次心跳
+            // get new lease id   重新产生一个续约消息
             let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
             let resp = match client.lease_grant(LOCAL_NODE_KEY_TTL, None).await {
                 Ok(resp) => resp,
@@ -159,7 +165,7 @@ pub async fn register_and_keepalive() -> Result<()> {
                 LOCAL_NODE_KEY_LEASE_ID = id;
             }
 
-            // 将节点更新成上线状态
+            // 重新上线
             if let Err(e) = set_online().await {
                 log::error!("[CLUSTER] set node online failed: {}", e);
                 continue;
@@ -170,9 +176,9 @@ pub async fn register_and_keepalive() -> Result<()> {
     Ok(())
 }
 
-/// Register to cluster
+/// Register to cluster   将当前节点注册到集群
 pub async fn register() -> Result<()> {
-    // 1. create a cluster lock for node register
+    // 1. create a cluster lock for node register  节点是串行注册的
     let mut locker = etcd::Locker::new("nodes/register");
     locker.lock(0).await?;
 
@@ -187,6 +193,8 @@ pub async fn register() -> Result<()> {
         NODES.insert(node.uuid.clone(), node);
     }
     node_ids.sort();
+
+    // 自增node_id
     for id in &node_ids {
         if *id == node_id {
             node_id += 1;
@@ -199,7 +207,7 @@ pub async fn register() -> Result<()> {
         LOCAL_NODE_ID = node_id;
     }
 
-    // 4. join the cluster
+    // 4. join the cluster    将节点添加到etcd中
     let key = format!("{}nodes/{}", &CONFIG.etcd.prefix, *LOCAL_NODE_UUID);
     let val = Node {
         id: node_id,
@@ -209,14 +217,14 @@ pub async fn register() -> Result<()> {
         grpc_addr: format!("http://{}:{}", get_local_grpc_ip(), CONFIG.grpc.port),
         role: LOCAL_NODE_ROLE.clone(),
         cpu_num: CONFIG.limit.cpu_num as u64,
-        status: NodeStatus::Prepare,
+        status: NodeStatus::Prepare,  // 刚注册的节点处于准备阶段
     };
     // cache local node   把节点信息插入到map中
     NODES.insert(LOCAL_NODE_UUID.clone(), val.clone());
     let val = json::to_string(&val).unwrap();
     // register node to cluster
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
-    // 有关跟etcd交互的逻辑先忽略
+    // 获取该key对应的ttl信息
     let resp = client.lease_grant(LOCAL_NODE_KEY_TTL, None).await?;
     let id = resp.id();
     // update local node key lease id
@@ -224,11 +232,11 @@ pub async fn register() -> Result<()> {
         LOCAL_NODE_KEY_LEASE_ID = id;
     }
 
-    // 这个续约id 像是一个门票?
+    // 将节点信息添加到集群中   并且因为绑定了一个ttl参数 需要为节点续约
     let opt = PutOptions::new().with_lease(id);
     let _resp = client.put(key, val, Some(opt)).await?;
 
-    // 5. watch node list  开启异步任务监听
+    // 5. watch node list  每个节点还要监听集群新上线的节点
     tokio::task::spawn(async move { watch_node_list().await });
 
     // 7. register ok, release lock
@@ -347,7 +355,7 @@ pub fn get_internal_grpc_token() -> String {
     }
 }
 
-/// List nodes from cluster or local cache    加载该路径下所有目录
+/// List nodes from cluster or local cache    从etcd中读取集群中所有节点
 pub async fn list_nodes() -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
@@ -370,11 +378,11 @@ pub async fn list_nodes() -> Result<Vec<Node>> {
  * 监听集群节点
  */
 async fn watch_node_list() -> Result<()> {
-    // 描述存储集群信息的组件
+
     let db = &super::db::CLUSTER_COORDINATOR;
     let key = "/nodes/";
 
-    // 监听nodes的变化 并产生一个事件流  跟ZK的套路一毛一样
+    // 监听节点变化
     let mut events = db.watch(key).await?;
     let events = Arc::get_mut(&mut events).unwrap();
     log::info!("Start watching node_list");
@@ -388,17 +396,18 @@ async fn watch_node_list() -> Result<()> {
             }
         };
         match ev {
-            // 感知到该节点下的数据插入事件
+            // 感知到新增节点
             Event::Put(ev) => {
                 // 将变化同步到本地
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value: Node = json::from_slice(&ev.value.unwrap()).unwrap();
                 log::info!("[CLUSTER] join {:?}", item_value.clone());
                 NODES.insert(item_key.to_string(), item_value.clone());
+
                 // The ingester need broadcast local file list to the new node
                 // -- 1. broadcast to the node prepare
                 // -- 2. broadcast to the node online (only itself)
-                // 代表是一个数据摄取节点
+                // 如果本节点是一个支持写入数据的节点 那么要将file_list通知到其他节点
                 if is_ingester(&LOCAL_NODE_ROLE)
                     && (item_value.status.eq(&NodeStatus::Prepare)
                         || (item_value.status.eq(&NodeStatus::Online)
@@ -419,7 +428,7 @@ async fn watch_node_list() -> Result<()> {
                     });
                 }
             }
-            // 感知到节点删除的话 将变化同步到本地map
+            // 感知到节点下线 同步缓存
             Event::Delete(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value = NODES.get(item_key).unwrap().clone();

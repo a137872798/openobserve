@@ -232,7 +232,7 @@ pub fn get_value(value: &Value) -> String {
     }
 }
 
-// 将一条记录添加到stream中
+// 将local_val处理后写入buf
 async fn add_valid_record(
     stream_meta: StreamMeta,   // 该对象描述了 stream的基本信息 以及分区键
     stream_schema_map: &mut AHashMap<String, Schema>,  // 维护所有stream的schema信息
@@ -265,8 +265,7 @@ async fn add_valid_record(
     // get hour key   用该schema信息产生一个hash值
     let schema_key = get_fields_key_xxh3(&schema_evolution.schema_fields);
 
-    // 在数据写入日志前 需要产生一个时间key 用于将数据分区  这样可以提高查询效率
-    // key 分为3部分  第一部分 时间  第二部分 hash值 第三部分 分区kv
+    // 产生一个wal文件的key
     let hour_key = get_wal_time_key(
         timestamp,
         &stream_meta.partition_keys,
@@ -327,7 +326,7 @@ async fn add_valid_record(
         // 转换记录成功
         if valid_record {
 
-            // 判断日志是否会产生告警
+            // 该stream关联一组告警  进行检测
             if !stream_meta.stream_alerts_map.is_empty() {
                 // Start check for alert trigger
                 let key = format!(

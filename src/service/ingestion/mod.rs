@@ -158,17 +158,17 @@ pub async fn get_stream_alerts<'a>(
         return;
     }
 
-    // 在摄取数据时检测  所以只需要 is_real_time 为true的就行了
+    // 在摄取数据时检测  所以只需要 is_real_time 为true的就行了  非实时告警就是通过一个query定期的去检测stream数据 并发现告警
     let mut alerts = alerts_list.unwrap().list.clone();
     alerts.retain(|alert| alert.is_real_time);
     stream_alerts_map.insert(key, alerts);
 }
 
 
-// 产生一个时间key 分离数据 这样在查询时就可以根据时间条件来过滤数据
+// 生成wal文件的key
 pub fn get_wal_time_key(
     timestamp: i64,    // 当前时间
-    partition_keys: &Vec<String>,  // 在stream_meta中记录的分区键
+    partition_keys: &Vec<String>,  // 该stream使用的分区键
     time_level: PartitionTimeLevel,   // 时间分区单位
     local_val: &Map<String, Value>,  // 本次要插入的数据
     suffix: Option<&str>,   // 一个由schema field计算出来的hash值  会作为后缀添加到时间key上

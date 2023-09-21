@@ -81,8 +81,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/**
+* OpenObserve 的启动入口
+*/
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+
+    // TODO 安装探针的先忽略
     #[cfg(feature = "profiling")]
     let agent = PyroscopeAgent::builder(
         &CONFIG.profiling.pyroscope_server_url,
@@ -92,9 +97,11 @@ async fn main() -> Result<(), anyhow::Error> {
     .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
     .build()
     .expect("Failed to setup pyroscope agent");
+
     #[cfg(feature = "profiling")]
     let agent_running = agent.start().expect("Failed to start pyroscope agent");
 
+    // 处理一些其他命令
     if cli().await? {
         return Ok(());
     }
@@ -121,7 +128,8 @@ async fn main() -> Result<(), anyhow::Error> {
     );
 
     // init jobs
-    // it must be initialized before the server starts  将当前节点注册到集群 并发出心跳请求 完成节点上线 (心跳请求成功就是上线)
+    // it must be initialized before the server starts
+    // 当该节点启动前 需要先注册到集群
     cluster::register_and_keepalive()
         .await
         .expect("cluster init failed");
@@ -129,7 +137,7 @@ async fn main() -> Result<(), anyhow::Error> {
     ider::init();
     // init wal   wal write-ahead-log 防止写入丢失的   目前只是触发Vec/HashMap的初始化
     wal::init();
-    // init job  job模块,监控各种任务 这里进行的初始化工作就比较多
+    // init job  开启各种后台任务
     job::init().await.expect("job init failed");
 
     // gRPC server
@@ -304,6 +312,9 @@ fn enable_tracing() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/**
+* 解析命令行参数
+*/
 async fn cli() -> Result<bool, anyhow::Error> {
     let app = clap::Command::new("openobserve")
         .version(env!("GIT_VERSION"))
