@@ -29,14 +29,14 @@ use crate::common::{
     meta::{
         alert::{Alert, Trigger},
         http::HttpResponse as MetaHttpResponse,
-        ingestion::{IngestionResponse, StreamSchemaChk, StreamStatus},
+        ingestion::{IngestionResponse, StreamStatus},
         stream::StreamParams,
         syslog::SyslogRoute,
         StreamType,
     },
     utils::{flatten, json, time::parse_timestamp_micro_from_value},
 };
-use crate::service::{db, format_stream_name, ingestion::write_file, schema::stream_schema_exists};
+use crate::service::{db, get_formatted_stream_name, ingestion::write_file};
 
 pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     let start = std::time::Instant::now();
@@ -59,7 +59,12 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     let in_stream_name = &route.stream_name;
     let org_id = &route.org_id;
 
-    let stream_name = &format_stream_name(in_stream_name);
+    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
+    let stream_name = &get_formatted_stream_name(
+        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
+        &mut stream_schema_map,
+    )
+    .await;
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(
@@ -79,37 +84,15 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
         );
     }
 
-    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
 
     let mut trigger: Option<Trigger> = None;
 
-    // Start Register Transforms for stream
-    /*
-    let (local_tans, _, stream_vrl_map) = crate::service::ingestion::register_stream_transforms(
-        org_id,
-        stream_name,
-        StreamType::Logs,
-        None,
-    ); */
-    // End Register Transforms for stream
-
-    let stream_schema: StreamSchemaChk = stream_schema_exists(
-        org_id,
-        stream_name,
-        StreamType::Logs,
-        &mut stream_schema_map,
-    )
-    .await;
-
-    let mut partition_keys: Vec<String> = vec![];
-    if stream_schema.has_partition_keys {
-        let partition_det =
-            crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
-                .await;
-        partition_keys = partition_det.partition_keys;
-    }
+    let partition_det =
+        crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map).await;
+    let partition_keys = partition_det.partition_keys;
+    let partition_time_level = partition_det.partition_time_level;
 
     // Start get stream alerts
     let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
@@ -166,6 +149,7 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
             org_id: org_id.to_string(),
             stream_name: stream_name.to_string(),
             partition_keys: partition_keys.clone(),
+            partition_time_level,
             stream_alerts_map: stream_alerts_map.clone(),
         },
         &mut stream_schema_map,
@@ -300,6 +284,6 @@ mod test {
     async fn test_ingest() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
         let raw = r#"<190>2019-02-13T21:53:30.605850+00:00 74794bfb6795 liblogging-stdlog: [origin software="rsyslogd" swVersion="8.24.0" x-pid="9043" x-info="http://www.rsyslog.com"] This is a test message"#;
-        ingest(&raw, addr).await.unwrap();
+        ingest(raw, addr).await.unwrap();
     }
 }

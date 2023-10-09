@@ -130,18 +130,26 @@ pub async fn init() -> Result<(), anyhow::Error> {
         .expect("syslog settings cache failed");
 
     // cache file list
-    if !CONFIG.common.meta_store_external
-        && (cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
-            || cluster::is_compactor(&cluster::LOCAL_NODE_ROLE))
-    {
-        db::file_list::remote::cache("", false)
-            .await
-            .expect("file list remote cache failed");
-        update_stats_from_file_list()
-            .await
-            .expect("file list remote calculate stats failed");
+    if !CONFIG.common.meta_store_external {
+        if cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
+            // load the wal file_list into memory
+            db::file_list::local::load_wal_in_cache()
+                .await
+                .expect("load wal file list failed");
+        }
+        if cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
+            || cluster::is_compactor(&cluster::LOCAL_NODE_ROLE)
+        {
+            db::file_list::remote::cache("", false)
+                .await
+                .expect("file list remote cache failed");
+            update_stats_from_file_list()
+                .await
+                .expect("file list remote calculate stats failed");
+        }
     }
     infra_file_list::create_table_index().await?;
+    infra_file_list::set_initialised().await?;
     db::file_list::remote::cache_stats()
         .await
         .expect("Load stream stats failed");

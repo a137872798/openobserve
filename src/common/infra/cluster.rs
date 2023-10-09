@@ -47,6 +47,10 @@ pub struct Node {
     pub role: Vec<Role>,
     pub cpu_num: u64,
     pub status: NodeStatus,
+    #[serde(default)]
+    pub scheduled: bool,
+    #[serde(default)]
+    pub broadcasted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -100,7 +104,7 @@ pub async fn register_and_keepalive() -> Result<()> {
     if CONFIG.common.local_mode {
         let roles = load_local_node_role();
         if !is_single_node(&roles) {
-            panic!("For local mode only single node deployment is allowed!");
+            panic!("Local mode only support NODE_ROLE=all");
         }
         // cache local node
         NODES.insert(LOCAL_NODE_UUID.clone(), load_local_mode_node());
@@ -198,6 +202,8 @@ pub async fn register() -> Result<()> {
         role: LOCAL_NODE_ROLE.clone(),
         cpu_num: CONFIG.limit.cpu_num as u64,
         status: NodeStatus::Prepare,
+        scheduled: true,
+        broadcasted: false,
     };
     // cache local node
     NODES.insert(LOCAL_NODE_UUID.clone(), val.clone());
@@ -245,6 +251,8 @@ pub async fn set_online() -> Result<()> {
             role: LOCAL_NODE_ROLE.clone(),
             cpu_num: CONFIG.limit.cpu_num as u64,
             status: NodeStatus::Online,
+            scheduled: true,
+            broadcasted: false,
         },
     };
 
@@ -296,23 +304,29 @@ pub fn get_cached_nodes(cond: fn(&Node) -> bool) -> Option<Vec<Node>> {
 
 #[inline(always)]
 pub fn get_cached_online_nodes() -> Option<Vec<Node>> {
-    get_cached_nodes(|node| node.status == NodeStatus::Online)
+    get_cached_nodes(|node| node.status == NodeStatus::Online && node.scheduled)
 }
 
 #[inline]
 pub fn get_cached_online_ingester_nodes() -> Option<Vec<Node>> {
-    get_cached_nodes(|node| node.status == NodeStatus::Online && is_ingester(&node.role))
+    get_cached_nodes(|node| {
+        node.status == NodeStatus::Online && node.scheduled && is_ingester(&node.role)
+    })
 }
 
 #[inline]
 pub fn get_cached_online_querier_nodes() -> Option<Vec<Node>> {
-    get_cached_nodes(|node| node.status == NodeStatus::Online && is_querier(&node.role))
+    get_cached_nodes(|node| {
+        node.status == NodeStatus::Online && node.scheduled && is_querier(&node.role)
+    })
 }
 
 #[inline(always)]
 pub fn get_cached_online_query_nodes() -> Option<Vec<Node>> {
     get_cached_nodes(|node| {
-        node.status == NodeStatus::Online && (is_querier(&node.role) || is_ingester(&node.role))
+        node.status == NodeStatus::Online
+            && node.scheduled
+            && (is_querier(&node.role) || is_ingester(&node.role))
     })
 }
 
@@ -361,34 +375,43 @@ async fn watch_node_list() -> Result<()> {
         match ev {
             Event::Put(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
-                let item_value: Node = json::from_slice(&ev.value.unwrap()).unwrap();
+                let mut item_value: Node = json::from_slice(&ev.value.unwrap()).unwrap();
                 log::info!("[CLUSTER] join {:?}", item_value.clone());
-                NODES.insert(item_key.to_string(), item_value.clone());
-                // The ingester need broadcast local file list to the new node
-                // -- 1. broadcast to the node prepare
-                // -- 2. broadcast to the node online (only itself)
-                if is_ingester(&LOCAL_NODE_ROLE)
-                    && (item_value.status.eq(&NodeStatus::Prepare)
-                        || (item_value.status.eq(&NodeStatus::Online)
-                            && item_key.eq(LOCAL_NODE_UUID.as_str())))
-                {
-                    log::info!("[CLUSTER] broadcast file_list to new node: {}", item_key);
-                    let notice_uuid = if item_key.eq(LOCAL_NODE_UUID.as_str()) {
-                        None
-                    } else {
-                        Some(item_key.to_string())
-                    };
-                    tokio::task::spawn(async move {
-                        if let Err(e) = db::file_list::local::broadcast_cache(notice_uuid).await {
-                            log::error!("[CLUSTER] broadcast file_list error: {}", e);
-                        }
-                    });
+                let broadcasted = match NODES.clone().get(item_key) {
+                    Some(v) => v.broadcasted,
+                    None => false,
+                };
+                if !broadcasted {
+                    // The ingester need broadcast local file list to the new node
+                    if is_ingester(&LOCAL_NODE_ROLE)
+                        && (item_value.status.eq(&NodeStatus::Prepare)
+                            || item_value.status.eq(&NodeStatus::Online))
+                    {
+                        let notice_uuid = if item_key.eq(LOCAL_NODE_UUID.as_str()) {
+                            log::info!("[CLUSTER] broadcast file_list to other nodes");
+                            None
+                        } else {
+                            log::info!(
+                                "[CLUSTER] broadcast file_list to new node: {}",
+                                &item_value.grpc_addr
+                            );
+                            Some(item_key.to_string())
+                        };
+                        tokio::task::spawn(async move {
+                            if let Err(e) = db::file_list::local::broadcast_cache(notice_uuid).await
+                            {
+                                log::error!("[CLUSTER] broadcast file_list error: {}", e);
+                            }
+                        });
+                    }
                 }
+                item_value.broadcasted = true;
+                NODES.insert(item_key.to_string(), item_value);
             }
             Event::Delete(ev) => {
                 let item_key = ev.key.strip_prefix(key).unwrap();
                 let item_value = NODES.get(item_key).unwrap().clone();
-                log::info!("[CLUSTER] leave {:?}", item_value.clone());
+                log::info!("[CLUSTER] leave {:?}", item_value);
                 NODES.remove(item_key);
             }
             Event::Empty => {}
@@ -409,6 +432,8 @@ pub fn load_local_mode_node() -> Node {
         role: [Role::All].to_vec(),
         cpu_num: CONFIG.limit.cpu_num as u64,
         status: NodeStatus::Online,
+        scheduled: true,
+        broadcasted: false,
     }
 }
 

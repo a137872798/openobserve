@@ -15,6 +15,7 @@
 use opentelemetry::propagation::Extractor;
 
 pub mod event;
+pub mod file_list;
 pub mod logs;
 pub mod metrics;
 pub mod search;

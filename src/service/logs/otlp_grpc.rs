@@ -37,21 +37,24 @@ use crate::common::{
     utils::{flatten, json, time::parse_timestamp_micro_from_value},
 };
 use crate::service::{
-    db, format_stream_name,
+    db, get_formatted_stream_name,
     ingestion::{grpc::get_val, write_file},
-    schema::stream_schema_exists,
     usage::report_request_usage_stats,
 };
 
-pub async fn ingest(
+pub async fn usage_ingest(
     org_id: &str,
     in_stream_name: &str,
     body: web::Bytes,
     thread_id: usize,
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
-    let stream_name = &format_stream_name(in_stream_name);
-
+    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
+    let stream_name = &get_formatted_stream_name(
+        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
+        &mut stream_schema_map,
+    )
+    .await;
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Err(anyhow::anyhow!("not an ingester"));
     }
@@ -68,27 +71,15 @@ pub async fn ingest(
     let mut min_ts =
         (Utc::now() + Duration::hours(CONFIG.limit.ingest_allowed_upto)).timestamp_micros();
 
-    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
 
     let mut trigger: Option<Trigger> = None;
 
-    let stream_schema = stream_schema_exists(
-        org_id,
-        stream_name,
-        StreamType::Logs,
-        &mut stream_schema_map,
-    )
-    .await;
-
-    let mut partition_keys: Vec<String> = vec![];
-    if stream_schema.has_partition_keys {
-        let partition_det =
-            crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
-                .await;
-        partition_keys = partition_det.partition_keys;
-    }
+    let partition_det =
+        crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map).await;
+    let partition_keys = partition_det.partition_keys;
+    let partition_time_level = partition_det.partition_time_level;
 
     // Start get stream alerts
     let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
@@ -136,6 +127,7 @@ pub async fn ingest(
                 org_id: org_id.to_string(),
                 stream_name: stream_name.to_string(),
                 partition_keys: partition_keys.clone(),
+                partition_time_level,
                 stream_alerts_map: stream_alerts_map.clone(),
             },
             &mut stream_schema_map,
@@ -220,35 +212,30 @@ pub async fn handle_grpc_request(
         )));
     }
     let start = std::time::Instant::now();
+    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let stream_name = match in_stream_name {
-        Some(name) => format_stream_name(name),
+        Some(name) => {
+            get_formatted_stream_name(
+                StreamParams::new(org_id, name, StreamType::Logs),
+                &mut stream_schema_map,
+            )
+            .await
+        }
         None => "default".to_owned(),
     };
 
     let stream_name = &stream_name;
 
-    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
 
-    let stream_schema = stream_schema_exists(
-        org_id,
-        stream_name,
-        StreamType::Traces,
-        &mut stream_schema_map,
-    )
-    .await;
-
-    let mut partition_keys: Vec<String> = vec![];
-    if stream_schema.has_partition_keys {
-        let partition_det =
-            crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
-                .await;
-        partition_keys = partition_det.partition_keys;
-    }
+    let partition_det =
+        crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map).await;
+    let partition_keys = partition_det.partition_keys;
+    let partition_time_level = partition_det.partition_time_level;
 
     // Start get stream alerts
-    let key = format!("{}/{}/{}", &org_id, StreamType::Traces, stream_name);
+    let key = format!("{}/{}/{}", &org_id, StreamType::Logs, stream_name);
     crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
     // End get stream alert
 
@@ -341,6 +328,7 @@ pub async fn handle_grpc_request(
                         org_id: org_id.to_string(),
                         stream_name: stream_name.to_string(),
                         partition_keys: partition_keys.clone(),
+                        partition_time_level,
                         stream_alerts_map: stream_alerts_map.clone(),
                     },
                     &mut stream_schema_map,

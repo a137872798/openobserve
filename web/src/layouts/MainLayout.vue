@@ -736,6 +736,7 @@ export default defineComponent({
     },
     changeOrganizationIdentifier() {
       this.store.dispatch("setOrganizationPasscode", "");
+      this.store.dispatch("resetOrganizationData", {});
       setTimeout(() => {
         this.redirectToParentRoute(this.$route.matched);
         // this.setSelectedOrganization();

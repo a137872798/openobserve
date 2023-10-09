@@ -116,21 +116,17 @@ pub async fn merge_by_stream(
         offset_time_hour + Duration::hours(1).num_microseconds().unwrap()
             - Duration::seconds(1).num_microseconds().unwrap(),
     );
-    let files = match file_list::query(
+    let files = file_list::query(
         org_id,
         stream_name,
         stream_type,
         partition_time_level,
         partition_offset_start,
         partition_offset_end,
+        true,
     )
     .await
-    {
-        Ok(files) => files,
-        Err(err) => {
-            return Err(err);
-        }
-    };
+    .map_err(|e| anyhow::anyhow!("query file list failed: {}", e))?;
 
     if files.is_empty() {
         // this hour is no data, and check if pass allowed_upto, then just write new offset
@@ -184,7 +180,7 @@ pub async fn merge_by_stream(
                 deleted: false,
             });
             for file in new_file_list.iter() {
-                stream_stats = stream_stats - file.meta;
+                stream_stats = stream_stats - file.meta.clone();
                 events.push(FileKey {
                     key: file.key.clone(),
                     meta: FileMeta::default(),
@@ -494,7 +490,7 @@ async fn write_file_list_s3(events: &[FileKey]) -> Result<(), anyhow::Error> {
         let mut cache_success = true;
         for event in events.iter() {
             if let Err(e) =
-                db::file_list::progress(&event.key, event.meta, event.deleted, false).await
+                db::file_list::progress(&event.key, Some(&event.meta), event.deleted, false).await
             {
                 cache_success = false;
                 log::error!("[COMPACT] set local cache failed, retrying: {}", e);
