@@ -31,8 +31,8 @@ use crate::{common::{
     utils::{flatten, json, time},
 }, service::format_stream_name};
 use crate::service::{
-    db, ingestion::get_wal_time_key, ingestion::write_file, stream::unwrap_partition_time_level,
-    usage::report_request_usage_stats,
+    db, format_stream_name, ingestion::get_wal_time_key, ingestion::write_file,
+    stream::unwrap_partition_time_level, usage::report_request_usage_stats,
 };
 
 pub async fn ingest(org_id: &str, body: web::Bytes, thread_id: usize) -> Result<IngestionResponse> {

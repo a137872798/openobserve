@@ -31,18 +31,16 @@ type EventChannel = Arc<mpsc::UnboundedSender<Vec<FileKey>>>;
 /// send an event to broadcast, will create a new channel for each nodes
 /// 将file_list的信息同步到其他节点
 pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), anyhow::Error> {
-
-    // 单机模式不需要任何数据同步
-    if CONFIG.common.local_mode {
+    if CONFIG.common.local_mode || items.is_empty() {
         return Ok(());
     }
 
     // 获得id对应的节点 代表要发送的目标节点 如果本节点上线 就是反馈给集群的其他节点
     let nodes = if node_uuid.is_none() {
         cluster::get_cached_nodes(|node| {
-            (node.status == cluster::NodeStatus::Prepare
-                || node.status == cluster::NodeStatus::Online)
-                // 有些节点负责压缩有些节点负责查询 反正是需要数据的节点
+            node.scheduled
+                && (node.status == cluster::NodeStatus::Prepare
+                    || node.status == cluster::NodeStatus::Online)
                 && (cluster::is_querier(&node.role) || cluster::is_compactor(&node.role))
         })
         .unwrap()
@@ -65,12 +63,13 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
         if !cluster::is_querier(&node.role) && !cluster::is_compactor(&node.role) {
             continue;
         }
-        let node_id = node.uuid.clone();
+        let node_uuid = node.uuid.clone();
+        let node_addr = node.grpc_addr.clone();
         if CONFIG.common.print_key_event {
             items.iter().for_each(|item| {
                 log::info!(
                     "[broadcast] send event to node[{}]: file: {}, deleted: {}",
-                    &node_id,
+                    &node_addr,
                     item.key,
                     item.deleted,
                 );
@@ -82,16 +81,14 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
         // 每个节点最多5次的重试次数
         for _i in 0..5 {
             let node = node.clone();
-            // 惰性创建管道  返回的channel是一个发送者
-            let channel = events.entry(node_id.clone()).or_insert_with(|| {
+            let channel = events.entry(node_uuid.clone()).or_insert_with(|| {
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 tokio::task::spawn(async move {
-                    let node_id = node.uuid.clone();
-                    // 开启一个循环任务 从rx中获取事件并通过grpc服务发送到目标节点上
+                    let node_addr = node.grpc_addr.clone();
                     if let Err(e) = send_to_node(node, &mut rx).await {
                         log::error!(
                             "[broadcast] send event to node[{}] channel failed, channel closed: {}",
-                            &node_id,
+                            &node_addr,
                             e
                         );
                     }
@@ -100,10 +97,10 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
             });
             tokio::task::yield_now().await;
             if let Err(e) = channel.clone().send(items.to_vec()) {
-                events.remove(&node_id);
+                events.remove(&node_uuid);
                 log::error!(
                     "[broadcast] send event to node[{}] channel failed, {}, retrying...",
-                    node_id,
+                    &node_addr,
                     e
                 );
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -115,7 +112,7 @@ pub async fn send(items: &[FileKey], node_uuid: Option<String>) -> Result<(), an
         if !ok {
             log::error!(
                 "[broadcast] send event to node[{}] channel failed, dropping events",
-                node_id
+                &node_addr
             );
         }
     }
@@ -139,7 +136,7 @@ async fn send_to_node(
                     EVENTS.write().await.remove(&node.uuid);
                     log::error!(
                         "[broadcast] node[{}] leaved cluster, dropping events",
-                        &node.uuid,
+                        &node.grpc_addr,
                     );
                     return Ok(());
                 }
@@ -165,7 +162,11 @@ async fn send_to_node(
         {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[broadcast] connect to node[{}] failed: {}", &node.uuid, e);
+                log::error!(
+                    "[broadcast] connect to node[{}] failed: {}",
+                    &node.grpc_addr,
+                    e
+                );
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
@@ -192,13 +193,11 @@ async fn send_to_node(
                 Some(v) => v,
                 // 如果收到None代表提示该channel已经被关闭了
                 None => {
-                    log::info!("[broadcast] node[{}] channel closed", &node.uuid);
+                    log::info!("[broadcast] node[{}] channel closed", &node.grpc_addr);
                     EVENTS.write().await.remove(&node.uuid);
                     return Ok(());
                 }
             };
-            // log::info!("broadcast to node[{}] -> {:?}", &node.uuid, items);
-            // 设置请求参数
             let mut req_query = cluster_rpc::FileList::default();
             for item in items.iter() {
                 req_query.items.push(cluster_rpc::FileKey::from(item));
@@ -209,7 +208,7 @@ async fn send_to_node(
                 if retry_ttl >= 1800 {
                     log::error!(
                         "[broadcast] to node[{}] timeout, dropping event, already retried for 30 minutes",
-                        &node.uuid
+                        &node.grpc_addr
                     );
                     break;
                 }
@@ -221,13 +220,13 @@ async fn send_to_node(
                             EVENTS.write().await.remove(&node.uuid);
                             log::error!(
                                 "[broadcast] node[{}] leaved cluster, dropping events",
-                                &node.uuid,
+                                &node.grpc_addr,
                             );
                             return Ok(());
                         }
                         log::error!(
                             "[broadcast] send event to node[{}] failed: {}, retrying...",
-                            &node.uuid,
+                            &node.grpc_addr,
                             e
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(wait_ttl)).await;

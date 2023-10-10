@@ -27,7 +27,6 @@ use crate::common::{
 
 use super::prom::Metadata;
 
-// 本身没有直接关联文件
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Stream {
     pub name: String,

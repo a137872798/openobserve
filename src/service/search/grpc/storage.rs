@@ -152,7 +152,7 @@ pub async fn search(
     );
 
     // load files to local cache
-    let deleted_files = cache_parquet_files(&files, &scan_stats).await?;
+    let (cache_type, deleted_files) = cache_parquet_files(&files, &scan_stats).await?;
     if !deleted_files.is_empty() {
         // remove deleted files from files_group
         for (_, g_files) in files_group.iter_mut() {
@@ -160,10 +160,11 @@ pub async fn search(
         }
     }
     log::info!(
-        "search->storage: org {}, stream {}, load files {}, into memory cache done",
+        "search->storage: org {}, stream {}, load files {}, into {:?} cache done",
         &sql.org_id,
         &sql.stream_name,
-        scan_stats.files
+        scan_stats.files,
+        cache_type,
     );
 
     let mut tasks = Vec::new();
@@ -249,6 +250,7 @@ async fn get_file_list(
         time_level,
         time_min,
         time_max,
+        true,
     )
     .await
     {
@@ -276,7 +278,7 @@ async fn get_file_list(
 async fn cache_parquet_files(
     files: &[FileKey],
     scan_stats: &ScanStats,
-) -> Result<Vec<String>, Error> {
+) -> Result<(file_data::CacheType, Vec<String>), Error> {
     let cache_type = if CONFIG.memory_cache.enabled
         && scan_stats.compressed_size < CONFIG.memory_cache.skip_size as i64
     {
@@ -290,7 +292,7 @@ async fn cache_parquet_files(
         file_data::CacheType::Disk
     } else {
         // no cache
-        return Ok(vec![]);
+        return Ok((file_data::CacheType::None, vec![]));
     };
 
     let mut tasks = Vec::new();
@@ -317,7 +319,6 @@ async fn cache_parquet_files(
                 _ => None,
             };
             let ret = if let Some(e) = ret {
-                log::info!("search->storage: download file to cache err: {}", e);
                 if e.to_string().to_lowercase().contains("not found") {
                     // delete file from file list
                     if let Err(e) = file_list::delete_parquet_file(&file_name, true).await {
@@ -325,6 +326,7 @@ async fn cache_parquet_files(
                     }
                     Some(file_name)
                 } else {
+                    log::error!("search->storage: download file to cache err: {}", e);
                     None
                 }
             } else {
@@ -351,5 +353,5 @@ async fn cache_parquet_files(
         }
     }
 
-    Ok(delete_files)
+    Ok((cache_type, delete_files))
 }

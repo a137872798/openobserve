@@ -23,6 +23,7 @@ use tokio::{sync::Semaphore, task, time};
 
 use crate::common::{
     infra::{
+        cluster,
         config::{COLUMN_TRACE_ID, CONFIG},
         metrics, storage, wal,
     },
@@ -41,12 +42,17 @@ pub async fn () -> Result<(), anyhow::Error> {
     let mut interval = time::interval(time::Duration::from_secs(CONFIG.limit.file_push_interval));
     interval.tick().await; // trigger the first run
     loop {
+        if cluster::is_offline() {
+            break;
+        }
         interval.tick().await;
         // 定期将磁盘数据文件推送到storage
         if let Err(e) = move_files_to_storage().await {
             log::error!("Error moving disk files to remote: {}", e);
         }
     }
+    log::info!("job::files::disk is stopped");
+    Ok(())
 }
 
 /*
@@ -142,8 +148,7 @@ pub async fn move_files_to_storage() -> Result<(), anyhow::Error> {
 
             // 只有当文件上传成功后  才会将本文件暴露给 file_list  也就是想要读取完整的数据集 就是 wal文件+file_list
             let (key, meta, _stream_type) = ret.unwrap();
-            // 将文件名保存到DB  同时还会通知其他节点同步file_list 以及将parquet文件从storage拉取到本地 以加速查找
-            let ret = db::file_list::local::set(&key, meta, false).await;
+            let ret = db::file_list::local::set(&key, Some(meta.clone()), false).await;
             if let Err(e) = ret {
                 log::error!(
                     "[JOB] Failed write disk file meta: {}, error: {}",

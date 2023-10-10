@@ -15,10 +15,8 @@
 use ahash::AHashMap;
 use chrono::{Duration, Utc};
 use datafusion::arrow::datatypes::Schema;
-use flate2::read::GzDecoder;
-use std::io::Read;
 
-use super::StreamMeta;
+use super::{ingest::decode_and_decompress, StreamMeta};
 use crate::common::{
     infra::{cluster, config::CONFIG, metrics},
     meta::{
@@ -37,7 +35,7 @@ use crate::common::{
     },
 };
 use crate::service::{
-    db, format_stream_name, ingestion::write_file, usage::report_request_usage_stats,
+    db, get_formatted_stream_name, ingestion::write_file, usage::report_request_usage_stats,
 };
 
 pub async fn process(
@@ -47,7 +45,12 @@ pub async fn process(
     thread_id: usize,
 ) -> Result<KinesisFHIngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
-    let stream_name = &format_stream_name(in_stream_name);
+    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
+    let stream_name = &get_formatted_stream_name(
+        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
+        &mut stream_schema_map,
+    )
+    .await;
 
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Err(anyhow::anyhow!("not an ingester"));
@@ -63,7 +66,6 @@ pub async fn process(
     let mut min_ts =
         (Utc::now() + Duration::hours(CONFIG.limit.ingest_allowed_upto)).timestamp_micros();
 
-    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
     let mut trigger: Option<Trigger> = None;
@@ -77,20 +79,10 @@ pub async fn process(
     );
     // End Register Transforms for stream
 
-    let stream_schema = crate::service::schema::stream_schema_exists(
-        org_id,
-        stream_name,
-        StreamType::Logs,
-        &mut stream_schema_map,
-    )
-    .await;
-    let mut partition_keys: Vec<String> = vec![];
-    if stream_schema.has_partition_keys {
-        let partition_det =
-            crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
-                .await;
-        partition_keys = partition_det.partition_keys;
-    }
+    let partition_det =
+        crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map).await;
+    let partition_keys = partition_det.partition_keys;
+    let partition_time_level = partition_det.partition_time_level;
 
     // Start get stream alerts
     let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
@@ -219,6 +211,7 @@ pub async fn process(
                         org_id: org_id.to_string(),
                         stream_name: stream_name.to_string(),
                         partition_keys: partition_keys.clone(),
+                        partition_time_level,
                         stream_alerts_map: stream_alerts_map.clone(),
                     },
                     &mut stream_schema_map,
@@ -295,48 +288,4 @@ pub async fn process(
         timestamp: request.timestamp.unwrap_or(Utc::now().timestamp_micros()),
         error_message: None,
     })
-}
-
-fn decode_and_decompress(
-    encoded_data: &str,
-) -> Result<(String, AWSRecordType), Box<dyn std::error::Error>> {
-    let decoded_data = crate::common::utils::base64::decode_raw(encoded_data)?;
-    let mut gz = GzDecoder::new(&decoded_data[..]);
-    let mut decompressed_data = String::new();
-    match gz.read_to_string(&mut decompressed_data) {
-        Ok(_) => Ok((decompressed_data, AWSRecordType::Cloudwatch)),
-        Err(_) => Ok((String::from_utf8(decoded_data)?, AWSRecordType::JSON)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::decode_and_decompress;
-
-    #[test]
-    fn test_decode_and_decompress_success() {
-        let encoded_data = "H4sIAAAAAAAAADWO0QqCMBiFX2XsOkKJZHkXot5YQgpdhMTSPzfSTbaZhPjuzbTLj3M45xtxC1rTGvJPB9jHQXrOL2lyP4VZdoxDvMFyEKDmpJF9NVBTskTW2gaNrGMl+85mC2VGAW0X1P1Dl4p3hksR8caA0ti/Fb9e+AZhZhwxr5a64VbD0NaOuR5xPLJzycEh+81fbxa4JmjVQ6uejwIG5YuLGjGgjWFIPlFll7ig8zOKuAImNWzxVExfL8ipzewAAAA=";
-        let expected = "{\"messageType\":\"CONTROL_MESSAGE\",\"owner\":\"CloudwatchLogs\",\"logGroup\":\"\",\"logStream\":\"\",\"subscriptionFilters\":[],\"logEvents\":[{\"id\":\"\",\"timestamp\":1680683189085,\"message\":\"CWL CONTROL MESSAGE: Checking health of destination Firehose.\"}]}";
-        let result =
-            decode_and_decompress(encoded_data).expect("Failed to decode and decompress data");
-        assert_eq!(result.0, expected);
-    }
-
-    #[test]
-    fn test_decode_success() {
-        let encoded_data = "eyJtZXNzYWdlIjoiMiAwNTg2OTQ4NTY0NzYgZW5pLTAzYzBmNWJhNzlhNjZlZjE3IDEwLjMuMTY2LjcxIDEwLjMuMTQxLjIwOSA0NDMgMzg2MzQgNiAxMDMgNDI5MjYgMTY4MDgzODU1NiAxNjgwODM4NTc4IEFDQ0VQVCBPSyJ9Cg==";
-        let expected = "{\"message\":\"2 058694856476 eni-03c0f5ba79a66ef17 10.3.166.71 10.3.141.209 443 38634 6 103 42926 1680838556 1680838578 ACCEPT OK\"}\n";
-        let result = decode_and_decompress(encoded_data).expect("Failed to decode data");
-        assert_eq!(result.0, expected);
-    }
-
-    #[test]
-    fn test_decode_and_decompress_invalid_base64() {
-        let encoded_data = "H4sIAAAAAAAC/ytJLS4BAAxGw7gNAAA&"; // Invalid base64 string
-        let result = decode_and_decompress(encoded_data);
-        assert!(
-            result.is_err(),
-            "Expected an error due to invalid base64 input"
-        );
-    }
 }

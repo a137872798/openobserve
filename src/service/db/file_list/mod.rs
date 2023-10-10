@@ -12,21 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use once_cell::sync::Lazy;
 
-use crate::common::infra::{
-    cache, cluster,
-    config::{RwHashMap, CONFIG},
-    file_list,
+use crate::common::{
+    infra::{
+        cache, cluster,
+        config::{RwHashMap, RwHashSet, CONFIG},
+        file_list,
+    },
+    meta::common::FileMeta,
 };
-use crate::common::meta::common::FileMeta;
 
 pub mod broadcast;
 pub mod local;
 pub mod remote;
 
-// 存储所有被标记成删除的数据文件
+pub static DEPULICATE_FILES: Lazy<RwHashSet<String>> =
+    Lazy::new(|| DashSet::with_capacity_and_hasher(1024, Default::default()));
+
 pub static DELETED_FILES: Lazy<RwHashMap<String, FileMeta>> =
     Lazy::new(|| DashMap::with_capacity_and_hasher(64, Default::default()));
 
@@ -38,9 +42,9 @@ pub static BLOCKED_ORGS: Lazy<Vec<&str>> =
 */
 pub async fn progress(
     key: &str,
-    data: FileMeta,
-    delete: bool,    // 表示该数据文件已经被删除 或者是新增的
-    download: bool,  // 代表是否要下载文件数据
+    data: Option<&FileMeta>,
+    delete: bool,
+    download: bool,
 ) -> Result<(), anyhow::Error> {
 
     // 代表删除文件
@@ -53,8 +57,7 @@ pub async fn progress(
             );
         }
     } else {
-        // 新增数据文件
-        if let Err(e) = file_list::add(key, &data).await {
+        if let Err(e) = file_list::add(key, data.unwrap()).await {
             log::error!(
                 "service:db:file_list: add {}, set_file_to_cache error: {}",
                 key,

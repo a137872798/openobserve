@@ -435,9 +435,10 @@ async fn handle_existing_schema(
         let final_schema = Schema::new(final_fields.clone()).with_metadata(metadata);
         // 如果元数据发生了变化
         if is_schema_changed {
-            log::info!("Acquired lock for stream {} to update schema", stream_name);
-
-            // 更新schema
+            log::info!(
+                "Acquired lock for cluster stream {} to update schema",
+                stream_name
+            );
             db::schema::set(
                 org_id,
                 stream_name,
@@ -467,19 +468,15 @@ async fn handle_existing_schema(
             "{}/schema/lock/{org_id}/{stream_type}/{stream_name}",
             &CONFIG.sled.prefix
         );
-
-        // 本地模式 获取本地读写锁即可
-        let value = LOCAL_SCHEMA_LOCKER
+        let local_map = LOCAL_SCHEMA_LOCKER.clone();
+        let mut schema_locker = local_map.write().await;
+        let value = schema_locker
             .entry(key.clone())
             .or_insert_with(|| tokio::sync::RwLock::new(false));
 
-        let mut lock_acquired = value.write().await; // lock acquired
+        let lock_acquired = value.write().await; // lock acquired
 
         if !*lock_acquired {
-
-            // 获取锁成功 下面的逻辑跟获得分布式锁后的一样
-            *lock_acquired = true; // We've acquired the lock.
-
             let schema = db::schema::get_from_db(org_id, stream_name, stream_type)
                 .await
                 .unwrap();
@@ -496,7 +493,10 @@ async fn handle_existing_schema(
             metadata.extend(inferred_schema.metadata().to_owned());
             let final_schema = Schema::new(final_fields.clone()).with_metadata(metadata);
             if is_schema_changed {
-                log::info!("Acquired lock for stream {} to update schema", stream_name);
+                log::info!(
+                    "Acquired lock for local stream {} to update schema",
+                    stream_name
+                );
                 db::schema::set(
                     org_id,
                     stream_name,
@@ -512,7 +512,6 @@ async fn handle_existing_schema(
                 //No Change in schema.
                 stream_schema_map.insert(stream_name.to_string(), schema.clone());
             }
-            *lock_acquired = false;
             drop(lock_acquired); // release lock
 
             Some(SchemaEvolution {
@@ -532,7 +531,6 @@ async fn handle_existing_schema(
                 get_schema_changes(&schema, &inferred_schema);
             stream_schema_map.insert(stream_name.to_string(), schema);
             log::info!("Schema exists for stream {} ", stream_name);
-            *lock_acquired = false;
             drop(lock_acquired); // release lock
             Some(SchemaEvolution {
                 schema_compatible: true,
@@ -620,8 +618,9 @@ async fn handle_new_schema(
                     is_schema_changed: true,
                 });
             } else {
-                // 此时库中已经有schema数据了 会在下面返回None
+                stream_schema_map.insert(stream_name.to_string(), chk_schema.clone());
                 *schema = chk_schema;
+
                 lock.unlock().await.map_err(server_internal_error).unwrap();
                 log::info!(
                     "Releasing lock for stream {} after schema is set",
@@ -636,16 +635,15 @@ async fn handle_new_schema(
                 &CONFIG.sled.prefix
             );
 
-            let value = LOCAL_SCHEMA_LOCKER
-                .entry(key.clone())
-                .or_insert_with(|| tokio::sync::RwLock::new(false));
+            let map = LOCAL_SCHEMA_LOCKER.clone(); // get a copy to read the value
 
-            // 先尝试获取本地锁
-            let mut lock_acquired = value.write().await; // lock acquired
+            let mut schema_locker = map.write().await; // lock it for writing a key for stream
+            let value = schema_locker
+                .entry(key.clone())
+                .or_insert_with(|| tokio::sync::RwLock::new(false)); // if stream schema doesn't exist, create a new key set value as false or for existing key get the value
+
+            let lock_acquired = value.write().await; //  acquire lock for writing
             if !*lock_acquired {
-                // 获取锁成功
-                *lock_acquired = true;
-                // We've acquired the lock.
                 log::info!(
                     "Acquired lock for stream {} as schema is empty",
                     stream_name
@@ -670,9 +668,8 @@ async fn handle_new_schema(
                         Some(*record_ts),
                         false,
                     )
-                        .await
-                        .unwrap();
-                    *lock_acquired = false;
+                    .await
+                    .unwrap();
                     drop(lock_acquired); // release lock
                     return Some(SchemaEvolution {
                         schema_compatible: true,
@@ -681,8 +678,8 @@ async fn handle_new_schema(
                         is_schema_changed: true,
                     });
                 } else {
-                    // No schema change   已经存在schema了 不能强行插入
-                    *lock_acquired = false;
+                    // No schema change
+                    stream_schema_map.insert(stream_name.to_string(), chk_schema.clone());
                     drop(lock_acquired); // release lock
                     *schema = chk_schema;
                     log::info!(
@@ -691,8 +688,8 @@ async fn handle_new_schema(
                     );
                 }
             } else {
-                // Some other request has already acquired the lock.   有其他请求获取了锁 放弃处理
-                *lock_acquired = false;
+                // Some other request has already acquired the lock.
+                //*lock_acquired = false;
                 drop(lock_acquired); // release lock
                 let chk_schema = db::schema::get_from_db(org_id, stream_name, stream_type)
                     .await

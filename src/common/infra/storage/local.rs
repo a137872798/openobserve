@@ -69,7 +69,9 @@ impl ObjectStore for Local {
                     metrics::STORAGE_WRITE_BYTES
                         .with_label_values(&[columns[1], columns[3], columns[2]])
                         .inc_by(data_size as u64);
-
+                    metrics::STORAGE_WRITE_REQUESTS
+                        .with_label_values(&[columns[1], columns[3], columns[2]])
+                        .inc();
                     let time = start.elapsed().as_secs_f64();
                     metrics::STORAGE_TIME
                         .with_label_values(&[columns[1], columns[3], columns[2], "put"])
@@ -108,7 +110,9 @@ impl ObjectStore for Local {
             metrics::STORAGE_READ_BYTES
                 .with_label_values(&[columns[1], columns[3], columns[2]])
                 .inc_by(data_len as u64);
-
+            metrics::STORAGE_READ_REQUESTS
+                .with_label_values(&[columns[1], columns[3], columns[2]])
+                .inc();
             let time = start.elapsed().as_secs_f64();
             metrics::STORAGE_TIME
                 .with_label_values(&[columns[1], columns[3], columns[2], "get"])
@@ -133,7 +137,9 @@ impl ObjectStore for Local {
             metrics::STORAGE_READ_BYTES
                 .with_label_values(&[columns[1], columns[3], columns[2]])
                 .inc_by(data_len as u64);
-
+            metrics::STORAGE_READ_REQUESTS
+                .with_label_values(&[columns[1], columns[3], columns[2]])
+                .inc();
             let time = start.elapsed().as_secs_f64();
             metrics::STORAGE_TIME
                 .with_label_values(&[columns[1], columns[3], columns[2], "get"])
@@ -158,7 +164,9 @@ impl ObjectStore for Local {
             metrics::STORAGE_READ_BYTES
                 .with_label_values(&[columns[1], columns[3], columns[2]])
                 .inc_by(data_len as u64);
-
+            metrics::STORAGE_READ_REQUESTS
+                .with_label_values(&[columns[1], columns[3], columns[2]])
+                .inc();
             let time = start.elapsed().as_secs_f64();
             metrics::STORAGE_TIME
                 .with_label_values(&[columns[1], columns[3], columns[2], "get"])
@@ -180,6 +188,11 @@ impl ObjectStore for Local {
                 .delete(&(format_key(location.as_ref()).into()))
                 .await;
             if result.is_ok() {
+                let file = location.to_string();
+                let columns = file.split('/').collect::<Vec<&str>>();
+                metrics::STORAGE_WRITE_REQUESTS
+                    .with_label_values(&[columns[1], columns[3], columns[2]])
+                    .inc();
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

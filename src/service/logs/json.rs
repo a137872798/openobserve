@@ -18,20 +18,18 @@ use chrono::{Duration, Utc};
 use datafusion::arrow::datatypes::Schema;
 
 use super::StreamMeta;
-use crate::common::{
-    infra::{cluster, config::CONFIG, metrics},
-    meta::{
-        alert::{Alert, Trigger},
-        ingestion::{IngestionResponse, StreamStatus},
-        stream::StreamParams,
-        usage::UsageType,
-        StreamType,
-    },
-    utils::{flatten, json, time::parse_timestamp_micro_from_value},
+use crate::common::infra::{config::CONFIG, metrics};
+use crate::common::meta::{
+    alert::{Alert, Trigger},
+    ingestion::{IngestionResponse, StreamStatus},
+    stream::StreamParams,
+    usage::UsageType,
+    StreamType,
 };
+use crate::common::utils::{flatten, json, time::parse_timestamp_micro_from_value};
+use crate::service::ingestion::is_ingestion_allowed;
 use crate::service::{
-    db, format_stream_name, ingestion::write_file, schema::stream_schema_exists,
-    usage::report_request_usage_stats,
+    get_formatted_stream_name, ingestion::write_file, usage::report_request_usage_stats,
 };
 
 /**
@@ -44,22 +42,15 @@ pub async fn ingest(
     thread_id: usize,  // 每个线程id 对应一个读写文件
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
-    // 对一些符号做转换
-    let stream_name = &format_stream_name(in_stream_name);
+    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
+    let stream_name = &get_formatted_stream_name(
+        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
+        &mut stream_schema_map,
+    )
+    .await;
 
-    // 当前节点不是摄取节点  无法接收数据
-    if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
-        return Err(anyhow::anyhow!("not an ingester"));
-    }
-
-    // 该org被排除在外
-    if !db::file_list::BLOCKED_ORGS.is_empty() && db::file_list::BLOCKED_ORGS.contains(&org_id) {
-        return Err(anyhow::anyhow!("Quota exceeded for this organization"));
-    }
-
-    // check if we are allowed to ingest   该stream已经被删除
-    if db::compact::retention::is_deleting_stream(org_id, stream_name, StreamType::Logs, None) {
-        return Err(anyhow::anyhow!("stream [{stream_name}] is being deleted"));
+    if let Some(value) = is_ingestion_allowed(org_id, Some(stream_name)) {
+        return Err(value);
     }
 
     // 表示超过该时间戳的记录不会被摄取
@@ -69,7 +60,6 @@ pub async fn ingest(
     // 获取vrl函数
     let mut runtime = crate::service::ingestion::init_functions_runtime();
 
-    let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
     let mut trigger: Option<Trigger> = None;
@@ -82,23 +72,10 @@ pub async fn ingest(
     );
     // End Register Transforms for stream
 
-    // 获取stream的schema信息
-    let stream_schema = stream_schema_exists(
-        org_id,
-        stream_name,
-        StreamType::Logs,
-        &mut stream_schema_map,
-    )
-    .await;
-
-    let mut partition_keys: Vec<String> = vec![];
-    // 获取分区键
-    if stream_schema.has_partition_keys {
-        let partition_det =
-            crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map)
-                .await;
-        partition_keys = partition_det.partition_keys;
-    }
+    let partition_det =
+        crate::service::ingestion::get_stream_partition_keys(stream_name, &stream_schema_map).await;
+    let partition_keys = partition_det.partition_keys;
+    let partition_time_level = partition_det.partition_time_level;
 
     // Start get stream alerts
     let key = format!("{}/{}/{}", &org_id, StreamType::Logs, &stream_name);
@@ -107,11 +84,10 @@ pub async fn ingest(
     // End get stream alert
 
     let mut buf: AHashMap<String, Vec<String>> = AHashMap::new();
-
-    // 看来支持传入多个json
-    let reader: Vec<json::Value> = json::from_slice(&body)?;
-
-    // 挨个处理json对象 不过他们都必须是针对同一个stream
+    let reader: Vec<json::Value> = json::from_slice(&body).unwrap_or({
+        let val: json::Value = json::from_slice(&body)?;
+        vec![val]
+    });
     for item in reader.iter() {
         //JSON Flattening
         let mut value = flatten::flatten(item)?;
@@ -172,6 +148,7 @@ pub async fn ingest(
                 org_id: org_id.to_string(),
                 stream_name: stream_name.to_string(),
                 partition_keys: partition_keys.clone(),
+                partition_time_level,
                 stream_alerts_map: stream_alerts_map.clone(),
             },
             &mut stream_schema_map,

@@ -127,6 +127,7 @@ pub async fn delete_all(
             // 支持使用时间范围做条件
             0,
             0,
+            true,
         )
         .await?;
 
@@ -212,11 +213,9 @@ pub async fn delete_by_date(
     drop(locker);
 
     let mut date_start =
-        DateTime::parse_from_str(&format!("{}T00:00:00Z", date_range.0), "%Y-%m-%dT%H:%M:%SZ")?
-            .with_timezone(&Utc);
+        DateTime::parse_from_rfc3339(&format!("{}T00:00:00Z", date_range.0))?.with_timezone(&Utc);
     let date_end =
-        DateTime::parse_from_str(&format!("{}T23:59:59Z", date_range.1), "%Y-%m-%dT%H:%M:%SZ")?
-            .with_timezone(&Utc);
+        DateTime::parse_from_rfc3339(&format!("{}T23:59:59Z", date_range.1))?.with_timezone(&Utc);
     let time_range = { (date_start.timestamp_micros(), date_end.timestamp_micros()) };
 
     if is_local_disk_storage() {
@@ -242,6 +241,7 @@ pub async fn delete_by_date(
             PartitionTimeLevel::Unset,
             time_range.0,
             time_range.1,
+            true,
         )
         .await?;
         match storage::del(&files.iter().map(|v| v.key.as_str()).collect::<Vec<_>>()).await {
@@ -304,6 +304,7 @@ async fn delete_from_file_list(
         PartitionTimeLevel::Unset,
         time_range.0,
         time_range.1,
+        true,
     )
     .await?;
     // 文件清单已经清空了
@@ -461,8 +462,8 @@ async fn write_file_list_s3(
             let mut cache_success = true;
             for event in &events {
                 if let Err(e) =
-                // 清除DB中的file_list
-                    db::file_list::progress(&event.key, event.meta, event.deleted, false).await
+                    db::file_list::progress(&event.key, Some(&event.meta), event.deleted, false)
+                        .await
                 {
                     cache_success = false;
                     log::error!(

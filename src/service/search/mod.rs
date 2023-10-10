@@ -95,8 +95,11 @@ async fn get_file_list(
     stream_type: StreamType,
     time_level: PartitionTimeLevel,   // file_list的划分级别
 ) -> Vec<FileKey> {
-
-    // 获取时间范围
+    let is_local = CONFIG.common.meta_store_external
+        || cluster::get_cached_online_querier_nodes()
+            .unwrap_or_default()
+            .len()
+            <= 1;
     let (time_min, time_max) = get_times(sql, stream_type).await;
 
     // 获取该时间范围内的所有 file_list文件
@@ -107,6 +110,7 @@ async fn get_file_list(
         time_level,
         time_min,
         time_max,
+        is_local,
     )
     .await
     {
@@ -269,7 +273,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                     .connect()
                     .await
                     .map_err(|err| {
-                        log::error!("search->grpc: node: {}, connect err: {:?}", node.id, err);
+                        log::error!("search->grpc: node: {}, connect err: {:?}", &node.grpc_addr, err);
                         server_internal_error("connect search node error")
                     })?;
 
@@ -294,7 +298,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                 let response: cluster_rpc::SearchResponse = match client.search(request).await {
                     Ok(res) => res.into_inner(),
                     Err(err) => {
-                        log::error!("search->grpc: node: {}, search err: {:?}", node.id, err);
+                        log::error!("search->grpc: node: {}, search err: {:?}", &node.grpc_addr, err);
                         if err.code() == tonic::Code::Internal {
                             let err = ErrorCodes::from_json(err.message())?;
                             return Err(Error::ErrorCode(err));
@@ -305,7 +309,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
 
                 log::info!(
                     "search->grpc: result node: {}, is_querier: {}, total: {}, took: {}, files: {}, scan_size: {}",
-                    node.id,
+                    &node.grpc_addr,
                     is_querier,
                     response.total,
                     response.took,

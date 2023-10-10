@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use dashmap::{DashMap, DashSet};
 use datafusion::arrow::datatypes::Schema;
 use dotenv_config::EnvConfig;
@@ -42,6 +42,7 @@ pub type FxIndexSet<K> = indexmap::IndexSet<K, ahash::RandomState>;
 pub type RwHashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 pub type RwHashSet<K> = DashSet<K, ahash::RandomState>;
 pub type RwAHashMap<K, V> = tokio::sync::RwLock<AHashMap<K, V>>;
+pub type RwAHashSet<K> = tokio::sync::RwLock<AHashSet<K>>;
 
 pub static VERSION: &str = env!("GIT_VERSION");
 pub static COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
@@ -117,7 +118,7 @@ pub static SYSLOG_ENABLED: Lazy<Arc<RwLock<bool>>> = Lazy::new(|| Arc::new(RwLoc
 pub static ENRICHMENT_TABLES: Lazy<RwHashMap<String, StreamTable>> = Lazy::new(Default::default);
 pub static ENRICHMENT_REGISTRY: Lazy<Arc<TableRegistry>> =
     Lazy::new(|| Arc::new(TableRegistry::default()));
-pub static LOCAL_SCHEMA_LOCKER: Lazy<RwHashMap<String, tokio::sync::RwLock<bool>>> =
+pub static LOCAL_SCHEMA_LOCKER: Lazy<Arc<RwAHashMap<String, tokio::sync::RwLock<bool>>>> =
     Lazy::new(|| Arc::new(Default::default)());
 
 #[derive(EnvConfig)]
@@ -246,6 +247,8 @@ pub struct Common {
     pub feature_fulltext_on_all_fields: bool,
     #[env_config(name = "ZO_FEATURE_FULLTEXT_EXTRA_FIELDS", default = "")]
     pub feature_fulltext_extra_fields: String,
+    #[env_config(name = "ZO_FEATURE_FILELIST_DEDUP_ENABLED", default = false)]
+    pub feature_filelist_dedup_enabled: bool,
     #[env_config(name = "ZO_UI_ENABLED", default = true)]
     pub ui_enabled: bool,
     #[env_config(name = "ZO_UI_SQL_BASE64_ENABLED", default = false)]
@@ -485,8 +488,12 @@ pub struct S3 {
     pub connect_timeout: u64,
     #[env_config(name = "ZO_S3_REQUEST_TIMEOUT", default = 3600)] // seconds
     pub request_timeout: u64,
+    // Deprecated, use ZO_S3_FEATURE_FORCE_HOSTED_STYLE instead
+    // #[deprecated(since = "0.6.5", note = "use `ZO_S3_FEATURE_FORCE_HOSTED_STYLE` instead")]
     #[env_config(name = "ZO_S3_FEATURE_FORCE_PATH_STYLE", default = false)]
     pub feature_force_path_style: bool,
+    #[env_config(name = "ZO_S3_FEATURE_FORCE_HOSTED_STYLE", default = false)]
+    pub feature_force_hosted_style: bool,
     #[env_config(name = "ZO_S3_FEATURE_HTTP1_ONLY", default = false)]
     pub feature_http1_only: bool,
     #[env_config(name = "ZO_S3_FEATURE_HTTP2_ONLY", default = false)]

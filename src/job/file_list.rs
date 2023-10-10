@@ -30,8 +30,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // 将记录file_list的wal文件推送到storage
     tokio::task::spawn(async move { run_move_file_to_s3().await });
-    // 从storage同步数据到缓存
-    tokio::task::spawn(async move { run_sync_s3_to_cache().await });
+    // tokio::task::spawn(async move { run_sync_s3_to_cache().await });
 
     Ok(())
 }
@@ -148,8 +147,7 @@ async fn upload_file(path_str: &str, file_key: &str) -> Result<(), anyhow::Error
     }
 }
 
-// 从storage同步数据到缓存
-async fn run_sync_s3_to_cache() -> Result<(), anyhow::Error> {
+async fn _run_sync_s3_to_cache() -> Result<(), anyhow::Error> {
     if !cluster::is_querier(&cluster::LOCAL_NODE_ROLE)
         && !cluster::is_compactor(&cluster::LOCAL_NODE_ROLE)
     {

@@ -135,23 +135,17 @@ pub async fn merge_by_stream(
         offset_time_hour + Duration::hours(1).num_microseconds().unwrap()
             - Duration::seconds(1).num_microseconds().unwrap(),
     );
-
-    // 从db获取文件列表  因为会从storage同步 所以可以确保准确性 (哪怕是上个小时也等待了 3*max_file_retention_time 的时间 所以可以确保有效性)
-    let files = match file_list::query(
+    let files = file_list::query(
         org_id,
         stream_name,
         stream_type,
         partition_time_level,
         partition_offset_start,
         partition_offset_end,
+        true,
     )
     .await
-    {
-        Ok(files) => files,
-        Err(err) => {
-            return Err(err);
-        }
-    };
+    .map_err(|e| anyhow::anyhow!("query file list failed: {}", e))?;
 
     // 该时间段没有数据
     if files.is_empty() {
@@ -219,7 +213,7 @@ pub async fn merge_by_stream(
 
             // 参与合并的文件都要标记成删除
             for file in new_file_list.iter() {
-                stream_stats = stream_stats - file.meta;
+                stream_stats = stream_stats - file.meta.clone();
                 events.push(FileKey {
                     key: file.key.clone(),
                     meta: FileMeta::default(),
@@ -566,7 +560,7 @@ async fn write_file_list_s3(events: &[FileKey]) -> Result<(), anyhow::Error> {
         let mut cache_success = true;
         for event in events.iter() {
             if let Err(e) =
-                db::file_list::progress(&event.key, event.meta, event.deleted, false).await
+                db::file_list::progress(&event.key, Some(&event.meta), event.deleted, false).await
             {
                 cache_success = false;
                 log::error!("[COMPACT] set local cache failed, retrying: {}", e);

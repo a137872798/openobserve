@@ -32,10 +32,14 @@ use crate::common::{
 };
 use crate::service::schema::check_for_schema;
 
-use super::ingestion::{get_value, get_wal_time_key};
+use super::{
+    ingestion::{get_value, get_wal_time_key},
+    stream::unwrap_partition_time_level,
+};
 
 pub mod bulk;
 pub mod gcs_pub_sub;
+pub mod ingest;
 pub mod json;
 pub mod kinesis_firehose;
 pub mod multi;
@@ -252,7 +256,7 @@ async fn add_valid_record(
     let hour_key = get_wal_time_key(
         timestamp,
         &stream_meta.partition_keys,
-        PartitionTimeLevel::Hourly,
+        unwrap_partition_time_level(stream_meta.partition_time_level, StreamType::Logs),
         local_val,
         Some(&schema_key),
     );
@@ -396,8 +400,9 @@ async fn evaluate_trigger(
 struct StreamMeta {
     org_id: String,
     stream_name: String,
-    partition_keys: Vec<String>,  // 分区键 看来一个stream的数据会写入到不同的节点
-    stream_alerts_map: AHashMap<String, Vec<Alert>>,  // 某个stream关联的所有告警检测器 当数据满足条件时 就会产生告警
+    partition_keys: Vec<String>,
+    partition_time_level: Option<PartitionTimeLevel>,
+    stream_alerts_map: AHashMap<String, Vec<Alert>>,
 }
 
 #[cfg(test)]

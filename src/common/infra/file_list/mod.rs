@@ -49,7 +49,10 @@ pub fn connect() -> Box<dyn FileList> {
 // 这是一个文件管理系统的特征对象
 #[async_trait]
 pub trait FileList: Sync + Send + 'static {
-    // 添加新文件
+    async fn create_table(&self) -> Result<()>;
+    async fn create_table_index(&self) -> Result<()>;
+    async fn set_initialised(&self) -> Result<()>;
+    async fn get_initialised(&self) -> Result<bool>;
     async fn add(&self, file: &str, meta: &FileMeta) -> Result<()>;
     // 移除文件
     async fn remove(&self, file: &str) -> Result<()>;
@@ -98,23 +101,19 @@ pub trait FileList: Sync + Send + 'static {
 }
 
 pub async fn create_table() -> Result<()> {
-    match CONFIG.common.meta_store.as_str().into() {
-        MetaStore::Sled => sqlite::create_table().await,
-        MetaStore::Sqlite => sqlite::create_table().await,
-        MetaStore::Etcd => sqlite::create_table().await,
-        MetaStore::DynamoDB => dynamo::create_table().await,
-        MetaStore::PostgreSQL => postgres::create_table().await,
-    }
+    CLIENT.create_table().await
 }
 
 pub async fn create_table_index() -> Result<()> {
-    match CONFIG.common.meta_store.as_str().into() {
-        MetaStore::Sled => sqlite::create_table_index().await,
-        MetaStore::Sqlite => sqlite::create_table_index().await,
-        MetaStore::Etcd => sqlite::create_table_index().await,
-        MetaStore::DynamoDB => dynamo::create_table_index().await,
-        MetaStore::PostgreSQL => postgres::create_table_index().await,
-    }
+    CLIENT.create_table_index().await
+}
+
+pub async fn set_initialised() -> Result<()> {
+    CLIENT.set_initialised().await
+}
+
+pub async fn get_initialised() -> Result<bool> {
+    CLIENT.get_initialised().await
 }
 
 #[inline]
