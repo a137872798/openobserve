@@ -30,12 +30,20 @@ const Dashboards = () => import("@/views/Dashboards/Dashboards.vue");
 const AlertList = () => import("@/components/alerts/AlertList.vue");
 const TemplateList = () => import("@/components/alerts/TemplateList.vue");
 const DestinationList = () => import("@/components/alerts/DestinationList.vue");
+const Settings = () => import("@/components/settings/index.vue");
 
 import ImportDashboard from "@/views/Dashboards/ImportDashboard.vue";
 const Functions = () => import("@/views/Functions.vue");
 const FunctionList = () => import("@/components/functions/FunctionList.vue");
-const AssociatedStreamFunction = () => import("@/components/functions/AssociatedStreamFunction.vue");
-const EnrichmentTableList = () => import("@/components/functions/EnrichmentTableList.vue");
+const AssociatedStreamFunction = () =>
+  import("@/components/functions/AssociatedStreamFunction.vue");
+const EnrichmentTableList = () =>
+  import("@/components/functions/EnrichmentTableList.vue");
+const RealUserMonitoring = () => import("@/views/RUM/RealUserMonitoring.vue");
+const SessionViewer = () => import("@/views/RUM/SessionViewer.vue");
+const ErrorViewer = () => import("@/views/RUM/ErrorViewer.vue");
+const AppErrors = () => import("@/views/RUM/AppErrors.vue");
+const AppSessions = () => import("@/views/RUM/AppSessions.vue");
 
 import { routeGuardPendingSubscriptions } from "@/utils/zincutils";
 import useIngestionRoutes from "./useIngestionRoutes";
@@ -187,6 +195,24 @@ const useRoutes = () => {
       },
     },
     {
+      path: "settings",
+      name: "settings",
+      component: Settings,
+      meta: {
+        keepAlive: true,
+      },
+      beforeEnter(to: any, from: any, next: any) {
+        routeGuardPendingSubscriptions(to, from, next);
+      },
+      children: [
+        {
+          path: "general",
+          name: "general",
+          component: () => import("@/components/settings/General.vue"),
+        },
+      ],
+    },
+    {
       path: "functions",
       name: "functions",
       component: Functions,
@@ -233,6 +259,60 @@ const useRoutes = () => {
           path: "templates",
           name: "alertTemplates",
           component: TemplateList,
+        },
+      ],
+    },
+    {
+      path: "rum",
+      name: "RUM",
+      component: RealUserMonitoring,
+      beforeEnter(to: any, from: any, next: any) {
+        routeGuardPendingSubscriptions(to, from, next);
+      },
+      meta: {
+        keepAlive: true,
+      },
+      children: [
+        {
+          path: "sessions",
+          name: "Sessions",
+          component: AppSessions,
+          meta: {
+            keepAlive: true,
+          },
+        },
+        {
+          path: "sessions/view/:id",
+          name: "SessionViewer",
+          component: SessionViewer,
+          props: true,
+        },
+        {
+          path: "errors",
+          name: "ErrorTracking",
+          component: AppErrors,
+          props: true,
+          meta: {
+            keepAlive: true,
+          },
+        },
+        {
+          path: "errors/view/:id",
+          name: "ErrorViewer",
+          component: ErrorViewer,
+          props: true,
+        },
+        {
+          path: "errors/view/:id",
+          name: "ErrorViewer",
+          component: ErrorViewer,
+          props: true,
+        },
+        {
+          path: "errors/view/:id",
+          name: "ErrorViewer",
+          component: ErrorViewer,
+          props: true,
         },
       ],
     },

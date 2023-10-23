@@ -13,7 +13,7 @@
 //  limitations under the License.
 
 import { createStore } from "vuex";
-import { useLocalOrganization, useLocalCurrentUser } from "../utils/zincutils";
+import { useLocalOrganization, useLocalCurrentUser, useLocalTimezone } from "../utils/zincutils";
 
 const pos = window.location.pathname.indexOf("/web/");
 
@@ -22,14 +22,17 @@ const API_ENDPOINT = import.meta.env.VITE_OPENOBSERVE_ENDPOINT
     ? import.meta.env.VITE_OPENOBSERVE_ENDPOINT.slice(0, -1)
     : import.meta.env.VITE_OPENOBSERVE_ENDPOINT
   : window.location.origin == "http://localhost:8081"
-  ? "/"
-  : pos > -1
-  ? window.location.origin + window.location.pathname.slice(0, pos)
-  : window.location.origin;
+    ? "/"
+    : pos > -1
+      ? window.location.origin + window.location.pathname.slice(0, pos)
+      : window.location.origin;
 
 const organizationObj = {
   organizationPasscode: "",
   allDashboardList: {},
+  rumToken: {
+    rum_token: "",
+  },
   quotaThresholdMsg: "",
   functions: [],
   streams: {},
@@ -50,6 +53,7 @@ export default createStore({
     theme: "",
     organizationData: JSON.parse(JSON.stringify(organizationObj)),
     zoConfig: {},
+    timezone: useLocalTimezone() ? useLocalTimezone() : "UTC",
   },
   mutations: {
     login(state, payload) {
@@ -88,6 +92,9 @@ export default createStore({
     },
     resetOrganizationData(state, payload) {
       state.organizationData = JSON.parse(JSON.stringify(organizationObj));
+    },
+    setRUMToken(state, payload) {
+      state.organizationData.rumToken = payload;
     },
     // setAllCurrentDashboards(state, payload) {
     //   state.allCurrentDashboards = payload;
@@ -128,6 +135,9 @@ export default createStore({
     appTheme(state, payload) {
       state.theme = payload;
     },
+    setTimezone(state, payload) {
+      state.timezone = payload;
+    },
   },
   actions: {
     login(context, payload) {
@@ -159,6 +169,9 @@ export default createStore({
     },
     resetOrganizationData(context, payload) {
       context.commit("resetOrganizationData", payload);
+    },
+    setRUMToken(context, payload) {
+      context.commit("setRUMToken", payload);
     },
     // setAllCurrentDashboards(context, payload) {
     //   context.commit('setAllCurrentDashboards', payload);
@@ -198,6 +211,9 @@ export default createStore({
     },
     appTheme(context, payload) {
       context.commit("appTheme", payload);
+    },
+    setTimezone(context, payload) {
+      context.commit("setTimezone", payload);
     },
   },
   modules: {},

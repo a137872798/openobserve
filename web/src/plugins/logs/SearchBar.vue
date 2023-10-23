@@ -115,6 +115,7 @@
             :default-relative-time="searchObj.data.datetime.relativeTimePeriod"
             data-test="logs-search-bar-date-time-dropdown"
             @on:date-change="updateDateTime"
+            @on:timezone-change="updateTimezone"
           />
         </div>
         <div class="search-time q-pl-sm float-left q-mr-sm">
@@ -154,7 +155,7 @@
         >
           <template #before>
             <query-editor
-              id="logsQueryEditor"
+              editor-id="logsQueryEditor"
               ref="queryEditorRef"
               class="monaco-editor"
               v-model:query="searchObj.data.query"
@@ -162,7 +163,7 @@
               :suggestions="autoCompleteSuggestions"
               @update:query="updateQueryValue"
               @run-query="handleRunQuery"
-              :class="searchObj.data.editorValue == '' ? 'empty-query' : ''"
+              :class="searchObj.data.editorValue == '' && searchObj.meta.queryEditorPlaceholderFlag ? 'empty-query' : ''"
             ></query-editor>
           </template>
           <template #after>
@@ -176,7 +177,7 @@
                 id="fnEditor"
                 style="height: 100%"
                 :class="
-                  searchObj.data.tempFunctionContent == ''
+                  searchObj.data.tempFunctionContent == '' && searchObj.meta.functionEditorPlaceholderFlag
                     ? 'empty-function'
                     : ''
                 "
@@ -245,7 +246,7 @@ export default defineComponent({
     SyntaxGuide,
     AutoRefreshInterval,
   },
-  emits: ["searchdata", "onChangeInterval"],
+  emits: ["searchdata", "onChangeInterval", "onChangeTimezone"],
   methods: {
     searchData() {
       if (this.searchObj.loading == false) {
@@ -410,6 +411,10 @@ export default defineComponent({
       if (value.valueType === "relative") emit("searchdata");
     };
 
+    const updateTimezone = () => {
+      emit("onChangeTimezone");
+    };
+
     const udpateQuery = () => {
       // alert(searchObj.data.query);
       if (queryEditorRef.value?.setValue)
@@ -508,6 +513,14 @@ export default defineComponent({
       fnEditorobj.onDidBlurEditorText((e: any) => {
         searchObj.data.tempFunctionContent = fnEditorobj.getValue();
         // saveFunction(fnEditorobj.getValue());
+      });
+
+      fnEditorobj.onDidFocusEditorWidget(() => {
+        searchObj.meta.functionEditorPlaceholderFlag = false;
+      });
+
+      fnEditorobj.onDidBlurEditorWidget(() => {
+        searchObj.meta.functionEditorPlaceholderFlag = true;
       });
 
       fnEditorobj.layout();
@@ -723,6 +736,7 @@ export default defineComponent({
       autoCompleteKeywords,
       autoCompleteSuggestions,
       onRefreshIntervalUpdate,
+      updateTimezone,
     };
   },
   computed: {
@@ -791,7 +805,7 @@ export default defineComponent({
     },
     toggleFunction(newVal) {
       if (newVal == false) {
-        this.searchObj.config.fnSplitterModel = 100;
+        this.searchObj.config.fnSplitterModel = 99.5;
         this.resetFunctionContent();
       } else {
         this.searchObj.config.fnSplitterModel = 60;
@@ -840,7 +854,7 @@ export default defineComponent({
 .empty-query .monaco-editor-background {
   background-image: url("../../assets/images/common/query-editor.png");
   background-repeat: no-repeat;
-  background-size: 170px;
+  background-size: 115px;
 }
 
 .empty-function .monaco-editor-background {

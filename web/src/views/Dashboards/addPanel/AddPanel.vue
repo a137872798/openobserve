@@ -27,7 +27,7 @@
         </div>
       </div>
       <div class="flex q-gutter-sm">
-        <DateTimePicker v-model="selectedDate" />
+        <DateTimePickerDashboard v-model="selectedDate" />
         <q-btn class="q-ml-md text-bold" outline padding="sm lg" color="red" no-caps :label="t('panel.discard')"
           @click="goBackToDashboardList" />
         <q-btn class="q-ml-md text-bold" outline padding="sm lg"  no-caps
@@ -83,9 +83,6 @@
                     <q-separator />
                     <VariablesValueSelector :variablesConfig="currentDashboardData.data?.variables"
                       :selectedTimeDate="dashboardPanelData.meta.dateTime" @variablesData="variablesDataUpdated" />
-                  <!-- <div style="flex:1;">
-                    <ChartRender :data="chartData" :selectedTimeDate="dashboardPanelData.meta.dateTime" :variablesData="variablesData" :width="6" @error="handleChartApiError"/>
-                  </div> -->
 
                     <div v-if="isOutDated" :style="{ borderColor: '#c3920d', borderWidth: '1px', borderStyle: 'solid', backgroundColor: store.state.theme == 'dark' ? '#2a1f03' : '#faf2da', padding: '1%', margin: '1%', borderRadius: '5px' }">
                       <div style="font-weight: 700;">Your chart is not up to date</div>
@@ -93,7 +90,7 @@
                     </div>
 
                     <div style="flex:1;">
-                      <PanelSchemaRenderer :panelSchema="chartData" :selectedTimeObj="dashboardPanelData.meta.dateTime" :variablesData="variablesData" :width="6" @error="handleChartApiError"/>
+                      <PanelSchemaRenderer :key="dashboardPanelData.data.type" :panelSchema="chartData" :selectedTimeObj="dashboardPanelData.meta.dateTime" :variablesData="variablesData" :width="6" @error="handleChartApiError"/>
                     </div>
                     <DashboardErrorsComponent :errors="errorData" />
                     </div>
@@ -154,8 +151,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { useStore } from "vuex";
 import DashboardQueryBuilder from "../../../components/dashboards/addPanel/DashboardQueryBuilder.vue";
 import useDashboardPanelData from "../../../composables/useDashboardPanel";
-import DateTimePicker from "../../../components/DateTimePicker.vue";
-import ChartRender from "../../../components/dashboards/addPanel/ChartRender.vue";
+import DateTimePickerDashboard from "../../../components/DateTimePickerDashboard.vue";
 import DashboardErrorsComponent from "../../../components/dashboards/addPanel/DashboardErrors.vue"
 import DashboardQueryEditor from "../../../components/dashboards/addPanel/DashboardQueryEditor.vue"
 import VariablesValueSelector from "../../../components/dashboards/VariablesValueSelector.vue";
@@ -169,8 +165,7 @@ export default defineComponent({
     ChartSelection,
     FieldList,
     DashboardQueryBuilder,
-    DateTimePicker,
-    ChartRender,
+    DateTimePickerDashboard,
     DashboardErrorsComponent,
     PanelSidebar,
     ConfigPanel,
@@ -268,7 +263,7 @@ export default defineComponent({
         store,
         route.query.dashboard,
         route.query.folder ?? "default"
-      )))
+      )));
       currentDashboardData.data = data
 
       // if variables data is null, set it to empty list
@@ -306,7 +301,8 @@ export default defineComponent({
       return dashboardPanelData.data.type == 'table' ? 'Other Columns' : dashboardPanelData.data.type == 'h-bar' ? 'X-Axis' : 'Y-Axis'
     })
 
-    watch(() => dashboardPanelData.data.type, () => {
+    watch(() => dashboardPanelData.data.type, async() => {
+      await nextTick();
       chartData.value = JSON.parse(JSON.stringify(dashboardPanelData.data))
     })
 
@@ -341,7 +337,10 @@ export default defineComponent({
     };
 
     const updateDateTime = (value: object) => {
-      dashboardPanelData.meta.dateTime = getConsumableDateTime(value);
+      dashboardPanelData.meta.dateTime = {
+        start_time: new Date(selectedDate.value.startTime),
+        end_time: new Date(selectedDate.value.endTime)
+      }
     };
     const goBack = () => {
       return router.push({
@@ -393,7 +392,7 @@ export default defineComponent({
 
       // check if name of panel is there
       if (!onlyChart) {
-        if (dashboardData.data.title == null || dashboardData.data.title == '') {
+        if (dashboardData.data.title == null || dashboardData.data.title.trim() == '') {
           errors.push("Name of Panel is required")
         }
       }
@@ -406,6 +405,16 @@ export default defineComponent({
           }
         })
       }
+
+      //check each query is empty or not for geomap
+      if (dashboardData.data.type == "geomap") {
+        dashboardData.data.queries.map((q: any, index: number) => {
+          if (q && q.query == "") {
+            errors.push(`Query-${index + 1} is empty`)
+          }
+        })
+      }
+
       if (promqlMode.value) {
         // 1. chart type: only line chart is supported
         const allowedChartTypes = ['area','line','bar','scatter','area-stacked','metric']
@@ -505,6 +514,14 @@ export default defineComponent({
             }
 
             break;
+          }
+          case 'geomap':{
+            if(dashboardData.data.queries[dashboardData.layout.currentQueryIndex].fields.latitude == null){
+              errors.push("Add one field for the latitude")
+            }
+            if(dashboardData.data.queries[dashboardData.layout.currentQueryIndex].fields.longitude == null){
+              errors.push("Add one field for the longitude")
+            }
           }
           default:
             break;
@@ -623,6 +640,7 @@ export default defineComponent({
           "Panel_ID" + Math.floor(Math.random() * (99999 - 10 + 1)) + 10;
 
         dashboardPanelData.data.id = panelId;
+        chartData.value = JSON.parse(JSON.stringify(dashboardPanelData.data));
         
         const errorMessageOnSave = await addPanel(
           store,

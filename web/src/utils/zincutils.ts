@@ -13,8 +13,8 @@
 //  limitations under the License.
 
 import config from "../aws-exports";
-import { ref, onMounted, onUnmounted } from "vue";
-import { useQuasar, type QNotifyCreateOptions } from "quasar";
+import { ref } from "vue";
+import { DateTime } from "luxon";
 
 const useLocalStorage = (
   key: string,
@@ -189,6 +189,11 @@ export const useLocalUserInfo = (val = "", isDelete = false) => {
   return userInfo.value;
 };
 
+export const useLocalTimezone = (val = "", isDelete = false) => {
+  const timezone: any = useLocalStorage("timezone", val, isDelete);
+  return timezone.value;
+};
+
 export const deleteSessionStorageVal = (key: string) => {
   try {
     return sessionStorage.removeItem(key);
@@ -265,8 +270,8 @@ export const getPath = () => {
     window.location.origin == "http://localhost:8081"
       ? "/"
       : pos > -1
-      ? window.location.pathname.slice(0, pos + 5)
-      : "";
+        ? window.location.pathname.slice(0, pos + 5)
+        : "";
   const cloudPath = import.meta.env.BASE_URL;
   return config.isCloud == "true" ? cloudPath : path;
 };
@@ -368,23 +373,78 @@ export const formatTimeWithSuffix = (us: number) => {
   return `${us.toFixed(2)}us`;
 };
 
-export const ooNotify = (timeout: number = 0) => {
-  const $q = useQuasar();
+export const mergeRoutes: any = (route1: any, route2: any) => {
+  const mergedRoutes = [];
 
-  const notify: QNotifyCreateOptions = {
-    type: "positive",
-    message: "Waiting for response...",
-    timeout: timeout,
-    actions: [
-      {
-        icon: "close",
-        color: "white",
-        handler: () => {
-          /* ... */
-        },
-      },
-    ],
-  };
+  // Iterate through route1 and add its elements to mergedRoutes
+  for (const r1 of route1) {
+    const matchingRoute = route2.find(
+      (r2: any) => r2.path === r1.path && r2.name === r1.name
+    );
 
-  return $q.notify(notify);
+    if (matchingRoute) {
+      // If a matching route is found in route2, merge the children
+      const mergedChildren = mergeRoutes(
+        r1.children || [],
+        matchingRoute.children || []
+      );
+      mergedRoutes.push({
+        ...r1,
+        children: mergedChildren.length ? mergedChildren : undefined,
+      });
+
+      // Remove the matching route from route2
+      route2 = route2.filter((r2: any) => r2 !== matchingRoute);
+    } else {
+      // If no matching route is found in route2, add the route from route1 as is
+      mergedRoutes.push({ ...r1 });
+    }
+  }
+
+  // Add any remaining routes from route2 to mergedRoutes
+  mergedRoutes.push(...route2);
+
+  return mergedRoutes;
+};
+
+export function formatDuration(ms: number) {
+  const seconds = (ms / 1000).toFixed(2);
+  const minutes = (Number(seconds) / 60).toFixed(2);
+  const hours = (Number(minutes) / 60).toFixed(2);
+  const days = (Number(hours) / 24).toFixed(2);
+
+  let formatted = `${seconds} sec`;
+
+  if (ms > 86400000) {
+    formatted = `${days} days ${hours} hr`;
+  } else if (ms > 3600000) {
+    formatted = `${hours} hr `;
+  } else if (ms > 60000) {
+    formatted = `${minutes} min`;
+  }
+
+  return formatted.trim();
+}
+export const timestampToTimezoneDate = (
+  unixMilliTimestamp: number,
+  timezone: string = "UTC",
+  format: string = "MMM dd, yyyy HH:mm:ss.SSS Z"
+) => {
+  return DateTime.fromMillis(Math.floor(unixMilliTimestamp))
+    .setZone(timezone)
+    .toFormat(format);
+};
+
+export const histogramDateTimezone: any = (
+  utcTime: any,
+  timezone: string = "UTC"
+) => {
+  if (timezone == "UTC") return Math.floor(new Date(utcTime).getTime());
+  else {
+    return (
+      Math.floor(
+        DateTime.fromISO(utcTime, { zone: "UTC" }).setZone(timezone).toSeconds()
+      ) * 1000
+    );
+  }
 };

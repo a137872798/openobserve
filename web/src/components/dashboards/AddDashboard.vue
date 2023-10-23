@@ -26,12 +26,7 @@
           </div>
         </div>
         <div class="col-auto">
-          <q-btn
-            v-close-popup
-            round
-            flat
-            icon="cancel"
-          />
+          <q-btn v-close-popup="true" round flat icon="cancel" />
         </div>
       </div>
     </q-card-section>
@@ -56,7 +51,8 @@
           outlined
           filled
           dense
-          :rules="[(val) => !!(val.trim()) || t('dashboard.nameRequired')]"
+          :rules="[(val) => !!val.trim() || t('dashboard.nameRequired')]"
+          :lazy-rules="true"
         />
         <span>&nbsp;</span>
         <q-input
@@ -73,11 +69,11 @@
 
         <span>&nbsp;</span>
         <!-- select folder or create new folder and select -->
-        <select-folder-dropdown @folder-selected="selectedFolder = $event"/>
+        <select-folder-dropdown @folder-selected="selectedFolder = $event" />
 
         <div class="flex justify-center q-mt-lg">
           <q-btn
-            v-close-popup
+            v-close-popup="true"
             class="q-mb-md text-bold"
             :label="t('dashboard.cancel')"
             text-color="light-text"
@@ -86,7 +82,7 @@
           />
           <q-btn
             data-test="dashboard-add-submit"
-            :disable="dashboardData.name === ''"
+            :disable="dashboardData.name.trim() === ''"
             :loading="onSubmit.isLoading.value"
             :label="t('dashboard.save')"
             class="q-mb-md text-bold no-border q-ml-md"
@@ -130,7 +126,7 @@ export default defineComponent({
     activeFolderId: {
       type: String,
       default: "default",
-    }
+    },
   },
   emits: ["updated"],
   setup(props, { emit }) {
@@ -142,8 +138,13 @@ export default defineComponent({
     const isValidIdentifier: any = ref(true);
     const { t } = useI18n();
     const $q = useQuasar();
-    const activeFolder: any = store.state.organizationData.folders.find((item: any) => item.folderId === props.activeFolderId);
-    const selectedFolder = ref({label: activeFolder.name, value: activeFolder.folderId});
+    const activeFolder: any = store.state.organizationData.folders.find(
+      (item: any) => item.folderId === props.activeFolderId
+    );
+    const selectedFolder = ref({
+      label: activeFolder.name,
+      value: activeFolder.folderId,
+    });
 
     //generate random integer number for dashboard Id
     function getRandInteger() {
@@ -173,7 +174,7 @@ export default defineComponent({
             owner: store.state.userInfo.name,
             created: new Date().toISOString(),
             panels: [],
-            version:2
+            version: 2,
           };
 
           callDashboard = dashboardService.create(
@@ -184,8 +185,10 @@ export default defineComponent({
         }
         await callDashboard
           .then(async (res: { data: any }) => {
-            const data = convertDashboardSchemaVersion(res.data["v" + res.data.version]);
-            
+            const data = convertDashboardSchemaVersion(
+              res.data["v" + res.data.version]
+            );
+
             //update store
             await getAllDashboards(store, selectedFolder.value.value);
             emit("updated", data.dashboardId, selectedFolder.value.value);
@@ -205,7 +208,7 @@ export default defineComponent({
             });
           });
       });
-    })
+    });
 
     return {
       t,
@@ -220,7 +223,7 @@ export default defineComponent({
       isValidIdentifier,
       getImageURL,
       selectedFolder,
-      onSubmit
+      onSubmit,
     };
   },
   methods: {
@@ -231,6 +234,6 @@ export default defineComponent({
       });
     },
   },
-  components: { SelectFolderDropdown }
+  components: { SelectFolderDropdown },
 });
 </script>

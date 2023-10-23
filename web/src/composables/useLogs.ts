@@ -25,6 +25,8 @@ import {
   b64EncodeUnicode,
   b64DecodeUnicode,
   formatSizeFromMB,
+  timestampToTimezoneDate,
+  histogramDateTimezone,
 } from "@/utils/zincutils";
 import { getConsumableRelativeTime } from "@/utils/date";
 import { byString } from "@/utils/json";
@@ -33,7 +35,6 @@ import { logsErrorMessage } from "@/utils/common";
 //   b64EncodeUnicode,
 //   useLocalLogFilterField,
 //   b64DecodeUnicode,
-//   ooNotify,
 // } from "@/utils/zincutils";
 
 import useFunctions from "@/composables/useFunctions";
@@ -51,7 +52,7 @@ const defaultObject = {
     splitterModel: 20,
     lastSplitterPosition: 0,
     splitterLimit: [0, 40],
-    fnSplitterModel: 60,
+    fnSplitterModel: 99.5,
     fnLastSplitterPosition: 0,
     fnSplitterLimit: [40, 100],
     refreshTimes: [
@@ -83,9 +84,11 @@ const defaultObject = {
     showQuery: true,
     showHistogram: true,
     showDetailTab: false,
-    toggleFunction: true,
+    toggleFunction: false,
     histogramDirtyFlag: false,
     sqlMode: false,
+    queryEditorPlaceholderFlag: true,
+    functionEditorPlaceholderFlag: true,
     resultGrid: {
       wrapCells: false,
       manualRemoveFields: false,
@@ -367,8 +370,8 @@ const useLogs = () => {
       const timestamps: any =
         searchObj.data.datetime.type === "relative"
           ? getConsumableRelativeTime(
-            searchObj.data.datetime.relativeTimePeriod
-          )
+              searchObj.data.datetime.relativeTimePeriod
+            )
           : cloneDeep(searchObj.data.datetime);
 
       if (
@@ -538,7 +541,7 @@ const useLogs = () => {
 
   const getQueryData = (isPagination = false) => {
     return new Promise((resolve, reject) => {
-      let dismiss = () => { };
+      let dismiss = () => {};
       try {
         searchObj.meta.showDetailTab = false;
 
@@ -629,8 +632,8 @@ const useLogs = () => {
                     }
                   }
 
-                  searchObj.data.queryResults.hits = searchObj.data.queryResults.hits.splice(0, 150);
-
+                  searchObj.data.queryResults.hits =
+                    searchObj.data.queryResults.hits.splice(0, 150);
                 } else {
                   searchObj.data.queryResults = res.data;
                 }
@@ -655,14 +658,14 @@ const useLogs = () => {
             .catch((err) => {
               searchObj.loading = false;
               if (err.response != undefined) {
-                searchObj.data.errorMsg = err.response.data.error + "114";
+                searchObj.data.errorMsg = err.response.data.error;
               } else {
-                searchObj.data.errorMsg = err.message + "115";
+                searchObj.data.errorMsg = err.message;
               }
               const customMessage = logsErrorMessage(err.response.data.code);
               searchObj.data.errorCode = err.response.data.code;
               if (customMessage != "") {
-                searchObj.data.errorMsg = t(customMessage) + "116";
+                searchObj.data.errorMsg = t(customMessage);
               }
               reject(false);
             });
@@ -770,7 +773,7 @@ const useLogs = () => {
           : {};
       const logFieldSelectedValue =
         logFilterField[
-        `${store.state.selectedOrganization.identifier}_${searchObj.data.stream.selectedStream.value}`
+          `${store.state.selectedOrganization.identifier}_${searchObj.data.stream.selectedStream.value}`
         ];
       const selectedFields = (logFilterField && logFieldSelectedValue) || [];
       if (
@@ -784,16 +787,18 @@ const useLogs = () => {
       searchObj.data.resultGrid.columns.push({
         name: "@timestamp",
         field: (row: any) =>
-          date.formatDate(
-            Math.floor(row[store.state.zoConfig.timestamp_column] / 1000),
-            "MMM DD, YYYY HH:mm:ss.SSS Z"
+          timestampToTimezoneDate(
+            row[store.state.zoConfig.timestamp_column] / 1000,
+            store.state.timezone,
+            "MMM dd, yyyy HH:mm:ss.SSS Z"
           ),
         prop: (row: any) =>
-          date.formatDate(
-            Math.floor(row[store.state.zoConfig.timestamp_column] / 1000),
-            "MMM DD, YYYY HH:mm:ss.SSS Z"
+          timestampToTimezoneDate(
+            row[store.state.zoConfig.timestamp_column] / 1000,
+            store.state.timezone,
+            "MMM dd, yyyy HH:mm:ss.SSS Z"
           ),
-        label: t("search.timestamp"),
+        label: t("search.timestamp") + ` (${store.state.timezone})`,
         align: "left",
         sortable: true,
       });
@@ -858,8 +863,11 @@ const useLogs = () => {
             zo_sql_num: string;
           }) => {
             unparsed_x_data.push(bucket.zo_sql_key);
-            const histDate = new Date(bucket.zo_sql_key + "Z");
-            xData.push(Math.floor(histDate.getTime()));
+            // const histDate = new Date(bucket.zo_sql_key);
+            xData.push(
+              histogramDateTimezone(bucket.zo_sql_key, store.state.timezone)
+            );
+            // xData.push(Math.floor(histDate.getTime()))
             yData.push(parseInt(bucket.zo_sql_num, 10));
           }
         );
@@ -868,6 +876,7 @@ const useLogs = () => {
       const chartParams = {
         title: getHistogramTitle(),
         unparsed_x_data: unparsed_x_data,
+        timezone: store.state.timezone,
       };
       searchObj.data.histogram = { xData, yData, chartParams };
     } catch (e: any) {
@@ -982,15 +991,15 @@ const useLogs = () => {
         })
         .catch((err) => {
           if (err.response != undefined) {
-            searchObj.data.errorMsg = err.response.data.error + "111";
+            searchObj.data.errorMsg = err.response.data.error;
           } else {
-            searchObj.data.errorMsg = err.message + "112";
+            searchObj.data.errorMsg = err.message;
           }
 
           const customMessage = logsErrorMessage(err.response.data.code);
           searchObj.data.errorCode = err.response.data.code;
           if (customMessage != "") {
-            searchObj.data.errorMsg = t(customMessage) + "113";
+            searchObj.data.errorMsg = t(customMessage);
           }
         })
         .finally(() => (searchObj.loading = false));
@@ -1144,6 +1153,7 @@ const useLogs = () => {
     handleQueryData,
     updateStreams,
     handleRunQuery,
+    generateHistogramData,
   };
 };
 

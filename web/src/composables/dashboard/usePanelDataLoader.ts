@@ -67,9 +67,9 @@ export const usePanelDataLoader = (
       timestamps.end_time != "Invalid Date"
     ) {
       startISOTimestamp =
-        new Date(timestamps.start_time.toISOString()).getTime() * 1000;
+        new Date(timestamps.start_time.toISOString()).getTime();
       endISOTimestamp =
-        new Date(timestamps.end_time.toISOString()).getTime() * 1000;
+        new Date(timestamps.end_time.toISOString()).getTime();
     } else {
       return;
     }
@@ -122,24 +122,38 @@ export const usePanelDataLoader = (
       // Get the page type from the first query in the panel schema
       const pageType = panelSchema.value.queries[0]?.fields?.stream_type;
 
-      await queryService
-        .search({
-          org_identifier: store.state.selectedOrganization.identifier,
-          query: query,
-          page_type: pageType,
-        })
-        .then((res) => {
-          // Set searchQueryData.data to the API response hits
-          state.data = res.data.hits;
-          state.errorDetail = "";
-        })
-        .catch((error) => {
-          // Process API error for "sql"
-          processApiError(error, "sql");
-        })
-        .finally(() => {
-          state.loading = false;
-        });
+      const sqlqueryPromise = panelSchema.value.queries?.map(
+        async (it: any) => {
+          return await queryService
+            .search({
+              org_identifier: store.state.selectedOrganization.identifier,
+              query: {
+                query: {
+                  sql: replaceQueryValue(it.query),
+                  sql_mode: "full",
+                  start_time: startISOTimestamp,
+                  end_time: endISOTimestamp,
+                  size: 0,
+                },
+              },
+              page_type: pageType,
+            })
+            .then((res) => {
+              // Set searchQueryData.data to the API response hits
+              // state.data = res.data.hits;
+              state.errorDetail = "";
+              return res.data.hits;
+            })
+            .catch((error) => {
+              // Process API error for "sql"
+              processApiError(error, "sql");
+            });
+        }
+      );
+      // Wait for all query promises to resolve
+      const sqlqueryResults = await Promise.all(sqlqueryPromise);
+      state.loading = false;
+      state.data = sqlqueryResults;
     }
   };
 
@@ -246,7 +260,7 @@ export const usePanelDataLoader = (
       }
       case "sql": {
         const errorDetailValue =
-          error.response?.data.error_detail ?? error.message;
+          error.response?.data.error_detail || error.response?.data.message || error.message;
         const trimmedErrorMessage =
           errorDetailValue.length > 300
             ? errorDetailValue.slice(0, 300) + " ..."
@@ -259,6 +273,9 @@ export const usePanelDataLoader = (
     }
   };
 
+  const hasAtLeastOneQuery = () =>
+    panelSchema.value.queries?.some((q: any) => q?.query);
+
   watch(
     () => isVisible.value,
     async () => {
@@ -266,7 +283,8 @@ export const usePanelDataLoader = (
       if (
         isVisible.value &&
         isDirty.value &&
-        panelSchema.value.queries?.length
+        panelSchema.value.queries?.length &&
+        hasAtLeastOneQuery()
       ) {
         loadData();
       }
