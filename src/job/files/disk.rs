@@ -106,7 +106,7 @@ pub async fn move_files_to_storage() -> Result<(), anyhow::Error> {
             StreamParams::new(&org_id, &stream_name, stream_type),
             &file_name,
         )
-        .await
+            .await
         {
             // println!("file is using for write, skip, {}", file_name);
             continue;
