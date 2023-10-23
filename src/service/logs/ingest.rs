@@ -24,7 +24,7 @@ use vrl::compiler::runtime::Runtime;
 
 use super::StreamMeta;
 use crate::common::infra::{config::CONFIG, metrics};
-use crate::common::meta::functions::{StreamTransform, VRLRuntimeConfig};
+use crate::common::meta::functions::{StreamTransform, VRLResultResolver};
 use crate::common::meta::ingestion::{
     AWSRecordType, GCPIngestionResponse, IngestionData, IngestionDataIter, IngestionError,
     IngestionRequest, KinesisFHData, KinesisFHIngestionResponse,
@@ -45,17 +45,14 @@ use crate::service::{
 pub async fn ingest(
     org_id: &str,
     in_stream_name: &str,
-    in_req: IngestionRequest,
+    in_req: IngestionRequest<'_>,
     thread_id: usize,
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
 
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
-    let stream_name = &get_formatted_stream_name(
-        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
-        &mut stream_schema_map,
-    )
-    .await;
+    let stream_params = StreamParams::new(org_id, in_stream_name, StreamType::Logs);
+    let stream_name = &get_formatted_stream_name(&stream_params, &mut stream_schema_map).await;
 
     if let Some(value) = is_ingestion_allowed(org_id, Some(stream_name)) {
         return Err(value);
@@ -69,7 +66,8 @@ pub async fn ingest(
     let mut stream_alerts_map: AHashMap<String, Vec<Alert>> = AHashMap::new();
     let mut stream_status = StreamStatus::new(stream_name);
     let mut trigger: Option<Trigger> = None;
-    let multi_req: Bytes;
+    let multi_req: &Bytes;
+    let reader: Vec<json::Value>;
 
     // Start Register Transforms for stream
     let (local_trans, stream_vrl_map) = crate::service::ingestion::register_stream_transforms(
@@ -94,12 +92,12 @@ pub async fn ingest(
 
     let data = match in_req {
         IngestionRequest::JSON(req) => {
-            let reader: Vec<json::Value> = json::from_slice(&req).unwrap_or({
-                let val: json::Value = json::from_slice(&req)?;
+            reader = json::from_slice(req).unwrap_or({
+                let val: json::Value = json::from_slice(req)?;
                 vec![val]
             });
             ep = "/api/org/ingest/logs/_json";
-            IngestionData::JSON(reader)
+            IngestionData::JSON(&reader)
         }
         IngestionRequest::GCP(req) => {
             ep = "/api/org/ingest/logs/_gcs";
@@ -108,7 +106,7 @@ pub async fn ingest(
         IngestionRequest::Multi(req) => {
             multi_req = req;
             ep = "/api/org/ingest/logs/_multi";
-            IngestionData::Multi(&multi_req)
+            IngestionData::Multi(multi_req)
         }
         IngestionRequest::KinesisFH(req) => {
             ep = "/api/org/ingest/logs/_kinesis";
@@ -138,12 +136,12 @@ pub async fn ingest(
                             }
                         }
                         let local_trigger = super::add_valid_record(
-                            StreamMeta {
+                            &StreamMeta {
                                 org_id: org_id.to_string(),
                                 stream_name: stream_name.to_string(),
-                                partition_keys: partition_keys.clone(),
-                                partition_time_level,
-                                stream_alerts_map: stream_alerts_map.clone(),
+                                partition_keys: &partition_keys,
+                                partition_time_level: &partition_time_level,
+                                stream_alerts_map: &stream_alerts_map,
                             },
                             &mut stream_schema_map,
                             &mut stream_status.status,
@@ -164,7 +162,7 @@ pub async fn ingest(
                 };
             }
             Err(e) => {
-                println!("Error: {:?}", e);
+                log::error!("Error: {:?}", e);
                 return Err(anyhow::Error::msg("Failed processing"));
             }
         }
@@ -172,14 +170,8 @@ pub async fn ingest(
 
     // write to file
     let mut stream_file_name = "".to_string();
-    let mut req_stats = write_file(
-        buf,
-        thread_id,
-        StreamParams::new(org_id, stream_name, StreamType::Logs),
-        &mut stream_file_name,
-        None,
-    )
-    .await;
+    let mut req_stats =
+        write_file(&buf, thread_id, &stream_params, &mut stream_file_name, None).await;
 
     if stream_file_name.is_empty() {
         return Ok(IngestionResponse::new(
@@ -188,7 +180,7 @@ pub async fn ingest(
         ));
     }
     // only one trigger per request, as it updates etcd
-    super::evaluate_trigger(trigger, stream_alerts_map).await;
+    super::evaluate_trigger(trigger, &stream_alerts_map).await;
 
     let time = start.elapsed().as_secs_f64();
     metrics::HTTP_RESPONSE_TIME
@@ -222,6 +214,13 @@ pub async fn ingest(
     )
     .await;
 
+    drop(runtime);
+    drop(stream_schema_map);
+    drop(buf);
+    drop(stream_vrl_map);
+    drop(stream_params);
+    drop(stream_alerts_map);
+
     Ok(IngestionResponse::new(
         http::StatusCode::OK.into(),
         vec![stream_status],
@@ -231,7 +230,7 @@ pub async fn ingest(
 fn apply_functions<'a>(
     item: &'a json::Value,
     local_trans: &Vec<StreamTransform>,
-    stream_vrl_map: &'a AHashMap<String, VRLRuntimeConfig>,
+    stream_vrl_map: &'a AHashMap<String, VRLResultResolver>,
     stream_name: &'a str,
     runtime: &mut Runtime,
 ) -> Result<json::Value, anyhow::Error> {

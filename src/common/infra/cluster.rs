@@ -29,7 +29,6 @@ use crate::common::{
 use crate::service::db;
 
 static LOCAL_NODE_KEY_TTL: i64 = 10; // node ttl, seconds
-// 续约id 跟etcd有关 估计是某一任期中每个节点的续约标识吧  当发生新的选举工作后 就需要更新续约id
 static mut LOCAL_NODE_KEY_LEASE_ID: i64 = 0;
 static mut LOCAL_NODE_STATUS: NodeStatus = NodeStatus::Prepare;
 
@@ -133,8 +132,6 @@ pub async fn register_and_keepalive() -> Result<()> {
             // 获取之前使用的ttl id
             let lease_id = unsafe { LOCAL_NODE_KEY_LEASE_ID };
             let ret = etcd::keepalive_lease_id(lease_id, LOCAL_NODE_KEY_TTL, is_offline).await;
-
-            // 代表检测到不再需要续约
             if ret.is_ok() {
                 break;
             }
@@ -156,7 +153,10 @@ pub async fn register_and_keepalive() -> Result<()> {
             log::error!("[CLUSTER] keepalive lease id expired or revoked, set node online again.");
             // get new lease id   重新产生一个续约消息
             let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
-            let resp = match client.lease_grant(LOCAL_NODE_KEY_TTL, None).await {
+            let resp = match client
+                .lease_grant(CONFIG.etcd.node_heartbeat_ttl, None)
+                .await
+            {
                 Ok(resp) => resp,
                 Err(e) => {
                     log::error!("[CLUSTER] lease grant failed: {}", e);
@@ -230,7 +230,6 @@ pub async fn register() -> Result<()> {
     let val = json::to_string(&val).unwrap();
     // register node to cluster
     let mut client = etcd::ETCD_CLIENT.get().await.clone().unwrap();
-    // 获取该key对应的ttl信息
     let resp = client.lease_grant(LOCAL_NODE_KEY_TTL, None).await?;
     let id = resp.id();
     // update local node key lease id

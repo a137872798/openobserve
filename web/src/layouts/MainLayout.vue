@@ -93,8 +93,8 @@
               <q-item
                 v-for="lang in langList"
                 :key="lang.code"
-                v-ripple
-                v-close-popup
+                v-ripple="true"
+                v-close-popup="true"
                 clickable
                 v-bind="lang"
                 active-class="activeLang"
@@ -149,7 +149,31 @@
             <q-list>
               <q-item-label header>{{ t("menu.account") }}</q-item-label>
 
-              <q-item v-ripple v-close-popup clickable @click="signout">
+              <q-item
+                v-if="config.isCloud == 'true'"
+                v-ripple="true"
+                v-close-popup="true"
+                clickable
+                :to="{ path: '/settings' }"
+              >
+                <q-item-section avatar>
+                  <q-avatar
+                    size="md"
+                    icon="settings"
+                    color="red"
+                    text-color="white"
+                  />
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ t("menu.settings") }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item
+                v-ripple="true"
+                v-close-popup="true"
+                clickable
+                @click="signout"
+              >
                 <q-item-section avatar>
                   <q-avatar
                     size="md"
@@ -380,6 +404,11 @@ export default defineComponent({
         title: t("menu.traces"),
         icon: outlinedAccountTree,
         link: "/traces",
+      },
+      {
+        title: t("menu.rum"),
+        icon: "devices",
+        link: "/rum",
       },
       {
         title: t("menu.dashboard"),

@@ -328,10 +328,15 @@ impl Sql {
                                 [0..where_str.to_lowercase().rfind(" order ").unwrap()]
                                 .to_string();
                         }
+                        if !meta.group_by.is_empty() {
+                            where_str = where_str
+                                [0..where_str.to_lowercase().rfind(" group ").unwrap()]
+                                .to_string();
+                        }
                         let pos_start = origin_sql.find(where_str.as_str()).unwrap();
                         let pos_end = pos_start + where_str.len();
                         origin_sql = format!(
-                            "{}{} AND {}{}",
+                            "{}{} AND ({}){}",
                             &origin_sql[0..pos_start],
                             time_range_sql,
                             where_str,
@@ -673,13 +678,13 @@ impl Sql {
                     crate::common::utils::functions::get_all_transform_keys(&org_id).await
                 {
                     let str_re = format!(r"(?i){}[ ]*\(.*\)", fn_name);
-                    let re1 = Regex::new(&str_re).unwrap();
-                    // 这个要正则匹配了 才放进去
-                    let cap = re1.captures(&origin_sql);
-                    if cap.is_some() {
-                        // 添加这些转换函数
-                        for _ in 0..cap.unwrap().len() {
-                            used_fns.push(fn_name.clone());
+
+                    if let Ok(re1) = Regex::new(&str_re) {
+                        let cap = re1.captures(&origin_sql);
+                        if cap.is_some() {
+                            for _ in 0..cap.unwrap().len() {
+                                used_fns.push(fn_name.clone());
+                            }
                         }
                     }
                 }
@@ -841,17 +846,23 @@ fn generate_histogram_interval(time_range: Option<(i64, i64)>, num: u16) -> Stri
     "10 second".to_string()
 }
 
-// 解析where条件
-fn split_sql_token_unwrap_brace(s: &str) -> Vec<String> {
-    if s.is_empty() {
+fn split_sql_token_unwrap_brace(token: &str) -> Vec<String> {
+    if token.is_empty() {
         return vec![];
     }
-
-    // 去掉外层包装
-    if s.starts_with('(') && s.ends_with(')') {
-        return split_sql_token_unwrap_brace(&s[1..s.len() - 1]);
+    if token.starts_with('(') && token.ends_with(')') {
+        return split_sql_token_unwrap_brace(&token[1..token.len() - 1]);
     }
-    split_sql_token(s)
+    let tokens = split_sql_token(token);
+    let mut fin_tokens = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        if token.starts_with('(') && token.ends_with(')') {
+            fin_tokens.extend(split_sql_token_unwrap_brace(&token[1..token.len() - 1]));
+        } else {
+            fin_tokens.push(token);
+        }
+    }
+    fin_tokens
 }
 
 // 对sql进行分词

@@ -21,8 +21,11 @@ use std::io::Error;
 use uuid::Uuid;
 
 use super::db;
-use crate::common::meta::user::{User, UserList, UserResponse, UserRole};
 use crate::common::{infra::config::USERS, meta::user::UpdateUser};
+use crate::common::{
+    infra::config::USERS_RUM_TOKEN,
+    meta::user::{User, UserList, UserResponse, UserRole},
+};
 use crate::{
     common::infra::config::ROOT_USER,
     common::meta::{
@@ -44,13 +47,17 @@ pub async fn post_user(org_id: &str, usr_req: UserRequest) -> Result<HttpRespons
         db::user::get(Some(org_id), &usr_req.email).await
     };
 
-    // 查询失败 
+    // 查询失败
     if existing_user.is_err() {
         let salt = Uuid::new_v4().to_string();
         let password = get_hash(&usr_req.password, &salt);
         let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-        let user = usr_req.to_new_dbuser(password, salt, org_id.replace(' ', "_"), token);
-        // 插入用户
+        let rum_token = format!(
+            "rum{}",
+            Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+        );
+        let user =
+            usr_req.to_new_dbuser(password, salt, org_id.replace(' ', "_"), token, rum_token);
         db::user::set(user).await.unwrap();
         Ok(HttpResponse::Ok().json(MetaHttpResponse::message(
             http::StatusCode::OK.into(),
@@ -111,7 +118,7 @@ pub async fn update_user(
                 }
 
                 new_user = local_user.clone();
-                // 自我更新需要传入原密码 
+                // 自我更新需要传入原密码
                 if self_update && user.old_password.is_some() && user.new_password.is_some() {
                     if local_user.password.eq(&get_hash(
                         &user.clone().old_password.unwrap(),
@@ -164,6 +171,7 @@ pub async fn update_user(
                                     vec![UserOrg {
                                         name: org_id.to_string(),
                                         token: new_user.token,
+                                        rum_token: new_user.rum_token,
                                         role: new_user.role,
                                     }]
                                 } else {
@@ -171,6 +179,7 @@ pub async fn update_user(
                                     orgs.push(UserOrg {
                                         name: org_id.to_string(),
                                         token: new_user.token,
+                                        rum_token: new_user.rum_token,
                                         role: new_user.role,
                                     });
                                     orgs
@@ -241,12 +250,16 @@ pub async fn add_user_to_org(
         if initiating_user.role.eq(&UserRole::Root) || initiating_user.role.eq(&UserRole::Admin) {
             // 用户与组织的关联 需要一个token
             let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-            // 更新用户的 org信息
+            let rum_token = format!(
+                "rum{}",
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+            );
             let mut orgs = db_user.clone().organizations;
             let new_orgs = if orgs.is_empty() {
                 vec![UserOrg {
                     name: local_org.to_string(),
                     token,
+                    rum_token: Some(rum_token),
                     role,
                 }]
             } else {
@@ -254,6 +267,7 @@ pub async fn add_user_to_org(
                 orgs.push(UserOrg {
                     name: local_org.to_string(),
                     token,
+                    rum_token: Some(rum_token),
                     role,
                 });
                 orgs
@@ -302,7 +316,27 @@ pub async fn get_user(org_id: Option<&str>, name: &str) -> Option<User> {
     }
 }
 
-// 查看某个org下所有用户
+pub async fn get_user_by_token(org_id: &str, token: &str) -> Option<User> {
+    let root_user = USERS_RUM_TOKEN.get(&format!("{DEFAULT_ORG}/{token}"));
+    if let Some(user) = root_user {
+        return Some(user.value().clone());
+    }
+
+    let key = format!("{org_id}/{token}");
+    let user = USERS_RUM_TOKEN.get(&key);
+    match user {
+        Some(loc_user) => Some(loc_user.value().clone()),
+        None => {
+            let res = db::user::get_by_token(Some(org_id), token).await;
+            if res.is_err() {
+                None
+            } else {
+                res.unwrap()
+            }
+        }
+    }
+}
+
 pub async fn list_users(org_id: &str) -> Result<HttpResponse, Error> {
     let mut user_list: Vec<UserResponse> = vec![];
     // 从缓存中获取用户数据
@@ -328,7 +362,7 @@ pub async fn remove_user_from_org(org_id: &str, email_id: &str) -> Result<HttpRe
         Ok(mut user) => {
             if !user.organizations.is_empty() {
                 let mut orgs = user.clone().organizations;
-                // 如果该用户没有任何组织关系 就可以直接删除该用户了 
+                // 如果该用户没有任何组织关系 就可以直接删除该用户了
                 if orgs.len() == 1 {
                     let _ = db::user::delete(email_id).await;
                 } else {
@@ -409,6 +443,7 @@ mod tests {
                 role: crate::common::meta::user::UserRole::Admin,
                 salt: String::new(),
                 token: "token".to_string(),
+                rum_token: Some("rum_token".to_string()),
                 first_name: "admin".to_owned(),
                 last_name: "".to_owned(),
                 org: "dummy".to_string(),
@@ -474,6 +509,7 @@ mod tests {
                 role: crate::common::meta::user::UserRole::Admin,
                 salt: String::new(),
                 token: "token".to_string(),
+                rum_token: Some("rum_token".to_string()),
                 first_name: "admin".to_owned(),
                 last_name: "".to_owned(),
                 org: "dummy".to_string(),

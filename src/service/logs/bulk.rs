@@ -23,7 +23,7 @@ use crate::common::{
     infra::{cluster, config::CONFIG, metrics},
     meta::{
         alert::{Alert, Trigger},
-        functions::{StreamTransform, VRLRuntimeConfig},
+        functions::{StreamTransform, VRLResultResolver},
         ingestion::{
             BulkResponse, BulkResponseError, BulkResponseItem, BulkStreamData, RecordStatus,
             StreamSchemaChk,
@@ -74,9 +74,7 @@ pub async fn ingest(
     // 产生一个vrl的运行环境  用于解析vrl函数
     let mut runtime = crate::service::ingestion::init_functions_runtime();
 
-    // 这里都是各种map的初始化
     let mut stream_vrl_map: AHashMap<String, VRLRuntimeConfig> = AHashMap::new();
-    // 存储stream相关的schema
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
     let mut stream_data_map = AHashMap::new();
 
@@ -286,12 +284,12 @@ pub async fn ingest(
 
             // 对数据处理后写入buf  并且进行告警检测  如果得到trigger 就代表触发了一个告警
             let local_trigger = super::add_valid_record(
-                StreamMeta {
+                &StreamMeta {
                     org_id: org_id.to_string(),
                     stream_name: stream_name.clone(),
-                    partition_keys,
-                    partition_time_level,
-                    stream_alerts_map: stream_alerts_map.clone(),
+                    partition_keys: &partition_keys,
+                    partition_time_level: &partition_time_level,
+                    stream_alerts_map: &stream_alerts_map,
                 },
                 &mut stream_schema_map,
                 &mut status,
@@ -347,9 +345,9 @@ pub async fn ingest(
 
         // 将内存中的数据写入到文件中
         let mut req_stats = write_file(
-            stream_data.data,
+            &stream_data.data,
             thread_id,
-            StreamParams::new(org_id, &stream_name, StreamType::Logs),
+            &StreamParams::new(org_id, &stream_name, StreamType::Logs),
             &mut stream_file_name,
             None,
         )
@@ -372,7 +370,7 @@ pub async fn ingest(
 
     // only one trigger per request, as it updates etcd  之前产生的告警在这里批量通知
     for (_, entry) in &stream_trigger_map {
-        super::evaluate_trigger(Some(entry.clone()), stream_alerts_map.clone()).await;
+        super::evaluate_trigger(Some(entry.clone()), &stream_alerts_map).await;
     }
 
     metrics::HTTP_RESPONSE_TIME

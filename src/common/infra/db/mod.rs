@@ -232,6 +232,7 @@ impl std::fmt::Debug for DbEventFileList {
 pub enum DbEventStreamStats {
     Set(String, Vec<(String, StreamStats)>),
     ResetMinTS(String, i64),
+    ResetAll,
 }
 
 impl std::fmt::Debug for DbEventStreamStats {
@@ -239,6 +240,7 @@ impl std::fmt::Debug for DbEventStreamStats {
         match self {
             DbEventStreamStats::Set(key, _) => write!(f, "Set({})", key),
             DbEventStreamStats::ResetMinTS(key, _) => write!(f, "ResetMinTS({})", key),
+            DbEventStreamStats::ResetAll => write!(f, "ResetAll"),
         }
     }
 }

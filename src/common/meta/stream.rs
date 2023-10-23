@@ -370,6 +370,11 @@ pub struct PartitioningDetails {
     pub partition_time_level: Option<PartitionTimeLevel>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+pub struct StreamDeleteFields {
+    pub fields: Vec<String>,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

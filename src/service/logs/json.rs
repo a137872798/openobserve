@@ -43,11 +43,8 @@ pub async fn ingest(
 ) -> Result<IngestionResponse, anyhow::Error> {
     let start = std::time::Instant::now();
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
-    let stream_name = &get_formatted_stream_name(
-        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
-        &mut stream_schema_map,
-    )
-    .await;
+    let stream_params = StreamParams::new(org_id, in_stream_name, StreamType::Logs);
+    let stream_name = &get_formatted_stream_name(&stream_params, &mut stream_schema_map).await;
 
     if let Some(value) = is_ingestion_allowed(org_id, Some(stream_name)) {
         return Err(value);
@@ -144,12 +141,12 @@ pub async fn ingest(
 
         // 添加单条记录  会插入到buf中
         let local_trigger = super::add_valid_record(
-            StreamMeta {
+            &StreamMeta {
                 org_id: org_id.to_string(),
                 stream_name: stream_name.to_string(),
-                partition_keys: partition_keys.clone(),
-                partition_time_level,
-                stream_alerts_map: stream_alerts_map.clone(),
+                partition_keys: &partition_keys,
+                partition_time_level: &partition_time_level,
+                stream_alerts_map: &stream_alerts_map,
             },
             &mut stream_schema_map,
             &mut stream_status.status,
@@ -166,26 +163,29 @@ pub async fn ingest(
 
     // write to file
     let mut stream_file_name = "".to_string();
-
-    // 将buf的数据写入文件
-    let mut req_stats = write_file(
-        buf,
-        thread_id,
-        StreamParams::new(org_id, stream_name, StreamType::Logs),
-        &mut stream_file_name,
-        None,
-    )
-    .await;
-
-    if stream_file_name.is_empty() {
+    let mut req_stats = match tokio::task::spawn_blocking(move || async move {
+        write_file(&buf, thread_id, &stream_params, &mut stream_file_name, None).await
+    })
+    .await
+    {
+        Ok(result) => result.await,
+        Err(err) => {
+            log::error!("error writing data : {}", err);
+            return Ok(IngestionResponse::new(
+                http::StatusCode::OK.into(),
+                vec![stream_status],
+            ));
+        }
+    };
+    /* if stream_file_name.is_empty() {
         return Ok(IngestionResponse::new(
             http::StatusCode::OK.into(),
             vec![stream_status],
         ));
-    }
+    } */
 
-    // only one trigger per request, as it updates etcd  发出通知
-    super::evaluate_trigger(trigger, stream_alerts_map).await;
+    // only one trigger per request, as it updates etcd
+    super::evaluate_trigger(trigger, &stream_alerts_map).await;
 
     let time = start.elapsed().as_secs_f64();
     metrics::HTTP_RESPONSE_TIME

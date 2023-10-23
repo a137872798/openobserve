@@ -21,6 +21,7 @@ pub mod logs;
 pub mod metrics;
 pub mod organization;
 pub mod prom;
+pub mod rum;
 pub mod search;
 pub mod status;
 pub mod stream;

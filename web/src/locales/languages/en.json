@@ -45,7 +45,9 @@
     "alerts": "Alerts",
     "openapi": "OpenAPI",
     "docs": "Docs",
-    "billings": "Billing"
+    "billings": "Billing",
+    "rum": "Real User Monitoring",
+    "settings": "Settings"
   },
   "about": {
     "name": "OpenObserve",
@@ -191,12 +193,13 @@
     "ok": "Ok",
     "docsCount": "Docs Count",
     "mapping": "Mapping",
-    "propertyName": "Property Name",
-    "propertyType": "Property Type",
+    "propertyName": "Field",
+    "propertyType": "Type",
     "type": "Type",
     "refreshStats": "Refresh Stats",
     "updateSettings": "Update Settings",
-    "explore": "Explore"
+    "explore": "Explore",
+    "timezone": "Timezone"
   },
   "function": {
     "header": "Functions",
@@ -235,7 +238,12 @@
   },
   "ingestion": {
     "header": "Ingestion",
-    "passwordLabel": "Reset Token"
+    "passwordLabel": "Reset Token",
+    "resetTokenBtnLabel": "Reset Token",
+    "resetRUMTokenLabel": "Reset RUM Token",
+    "generateRUMTokenLabel": "Generate RUM Token",
+    "generateRUMTokenMessage": "Generate RUM Token to enable RUM for your organization.",
+    "npmStepTitle": "NPM Installation Method"
   },
   "syslog": {
     "stream": "Stream",
@@ -326,7 +334,10 @@
     "sql": "Query",
     "back": "<< Back",
     "auto": "Auto",
-    "promQL": "PromQL"
+    "promQL": "PromQL",
+    "latitude": "Latitude",
+    "longitude": "Longitude",
+    "weight": "Weight"
   },
   "alerts": {
     "header": "Alerts",
@@ -457,5 +468,19 @@
     "searchLabel": "Search metric label",
     "add": "Add",
     "cancel": "Cancel"
+  },
+  "settings": {
+    "header": "Settings",
+    "userKeyLabel": "User Key",
+    "rumKeyLabel": "RUM Key",
+    "newUserKeyBtnLbl": "Add User Key",
+    "addUserKeyTitle": "Create User Key",
+    "organizationLabel": "Select Organization(s): ",
+    "save": "Save",
+    "cancel": "Cancel",
+    "apiNamePlaceHolder": "Key Name",
+    "updateuserKey": "Update User Key",
+    "id": "Id",
+    "update": "Update"
   }
 }

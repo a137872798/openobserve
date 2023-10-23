@@ -38,8 +38,7 @@ use crate::common::{
 };
 use crate::service::{db, get_formatted_stream_name, ingestion::write_file};
 
-// 接收syslog
-pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
+pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, anyhow::Error> {
     let start = std::time::Instant::now();
 
     // 拿到该地址的ip地址
@@ -64,12 +63,10 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     let in_stream_name = &route.stream_name;
     let org_id = &route.org_id;
 
+    let mut runtime = crate::service::ingestion::init_functions_runtime();
     let mut stream_schema_map: AHashMap<String, Schema> = AHashMap::new();
-    let stream_name = &get_formatted_stream_name(
-        StreamParams::new(org_id, in_stream_name, StreamType::Logs),
-        &mut stream_schema_map,
-    )
-    .await;
+    let stream_params = StreamParams::new(org_id, in_stream_name, StreamType::Logs);
+    let stream_name = &get_formatted_stream_name(&stream_params, &mut stream_schema_map).await;
     if !cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
         return Ok(
             HttpResponse::InternalServerError().json(MetaHttpResponse::error(
@@ -104,6 +101,14 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
     // End get stream alert
 
+    // Start Register Transforms for stream
+    let (local_trans, stream_vrl_map) = crate::service::ingestion::register_stream_transforms(
+        org_id,
+        StreamType::Logs,
+        stream_name,
+    );
+    // End Register Transforms for stream
+
     let mut buf: AHashMap<String, Vec<String>> = AHashMap::new();
 
     // 将syslog转换成json
@@ -111,20 +116,18 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     let mut value = message_to_value(parsed_msg);
     value = flatten::flatten(&value).unwrap();
 
-    /*
-    let mut value = crate::service::ingestion::apply_stream_transform(
-        &local_tans,
-        &value,
-        None,
-        None,
-        &stream_vrl_map,
-        stream_name,
-        &mut runtime,
-    );
-
+    if !local_trans.is_empty() {
+        value = crate::service::ingestion::apply_stream_transform(
+            &local_trans,
+            &value,
+            &stream_vrl_map,
+            stream_name,
+            &mut runtime,
+        )?;
+    }
     if value.is_null() || !value.is_object() {
         stream_status.status.failed += 1; // transform failed or dropped
-    } */
+    }
     // End row based transform
 
     // get json object
@@ -151,12 +154,12 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
     );
 
     let local_trigger = super::add_valid_record(
-        StreamMeta {
+        &StreamMeta {
             org_id: org_id.to_string(),
             stream_name: stream_name.to_string(),
-            partition_keys: partition_keys.clone(),
-            partition_time_level,
-            stream_alerts_map: stream_alerts_map.clone(),
+            partition_keys: &partition_keys,
+            partition_time_level: &partition_time_level,
+            stream_alerts_map: &stream_alerts_map,
         },
         &mut stream_schema_map,
         &mut stream_status.status,
@@ -169,21 +172,10 @@ pub async fn ingest(msg: &str, addr: SocketAddr) -> Result<HttpResponse, ()> {
         trigger = Some(local_trigger.unwrap());
     }
     let mut stream_file_name = "".to_string();
-    write_file(
-        buf,
-        thread_id,
-        StreamParams::new(org_id, stream_name, StreamType::Logs),
-        &mut stream_file_name,
-        None,
-    )
-    .await;
+    write_file(&buf, thread_id, &stream_params, &mut stream_file_name, None).await;
 
     // only one trigger per request, as it updates etcd
-    super::evaluate_trigger(trigger, stream_alerts_map).await;
-
-    /*     req_stats.response_time = start.elapsed().as_secs_f64();
-    //metric + data usage
-    report_ingest_stats(&req_stats, org_id, StreamType::Logs, UsageEvent::Syslog).await; */
+    super::evaluate_trigger(trigger, &stream_alerts_map).await;
 
     let time = start.elapsed().as_secs_f64();
     metrics::HTTP_RESPONSE_TIME

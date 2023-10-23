@@ -215,7 +215,7 @@ pub async fn delete_by_date(
     let mut date_start =
         DateTime::parse_from_rfc3339(&format!("{}T00:00:00Z", date_range.0))?.with_timezone(&Utc);
     let date_end =
-        DateTime::parse_from_rfc3339(&format!("{}T23:59:59Z", date_range.1))?.with_timezone(&Utc);
+        DateTime::parse_from_rfc3339(&format!("{}T00:00:00Z", date_range.1))?.with_timezone(&Utc);
     let time_range = { (date_start.timestamp_micros(), date_end.timestamp_micros()) };
 
     if is_local_disk_storage() {
@@ -348,8 +348,8 @@ async fn delete_from_file_list(
     // 更新文件清单
     write_file_list(file_list_days, hours_files).await?;
 
-    // update stream stats  TODO 更新统计数据
-    if CONFIG.common.meta_store_external && stream_stats.doc_num != 0 {
+    // update stream stats
+    if stream_stats.doc_num != 0 {
         infra_file_list::set_stream_stats(
             org_id,
             &[(

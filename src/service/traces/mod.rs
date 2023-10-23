@@ -84,6 +84,7 @@ pub async fn handle_trace_request(
 
     let traces_stream_name = &traces_stream_name;
 
+    let mut runtime = crate::service::ingestion::init_functions_runtime();
     let mut trace_meta_coll: AHashMap<String, Vec<json::Map<String, json::Value>>> =
         AHashMap::new();
     let mut traces_schema_map: AHashMap<String, Schema> = AHashMap::new();
@@ -115,6 +116,14 @@ pub async fn handle_trace_request(
     let key = format!("{}/{}/{}", &org_id, StreamType::Traces, traces_stream_name);
     crate::service::ingestion::get_stream_alerts(key, &mut stream_alerts_map).await;
     // End get stream alert
+
+    // Start Register Transforms for stream
+    let (local_trans, stream_vrl_map) = crate::service::ingestion::register_stream_transforms(
+        org_id,
+        StreamType::Traces,
+        traces_stream_name,
+    );
+    // End Register Transforms for stream
 
     let mut trigger: Option<Trigger> = None;
 
@@ -220,6 +229,17 @@ pub async fn handle_trace_request(
                 //JSON Flattening
                 let mut value = flatten::flatten(&value).unwrap();
 
+                if !local_trans.is_empty() {
+                    value = crate::service::ingestion::apply_stream_transform(
+                        &local_trans,
+                        &value,
+                        &stream_vrl_map,
+                        traces_stream_name,
+                        &mut runtime,
+                    )
+                    .unwrap_or(value);
+                }
+                // End row based transform */
                 // get json object
                 let val_map = value.as_object_mut().unwrap();
 
@@ -293,9 +313,9 @@ pub async fn handle_trace_request(
 
     let mut traces_file_name = "".to_string();
     let mut req_stats = write_file(
-        data_buf,
+        &data_buf,
         thread_id,
-        StreamParams::new(org_id, traces_stream_name, StreamType::Traces),
+        &StreamParams::new(org_id, traces_stream_name, StreamType::Traces),
         &mut traces_file_name,
         None,
     )

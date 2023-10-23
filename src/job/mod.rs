@@ -30,6 +30,7 @@ mod compact;
 pub(crate) mod file_list;
 pub(crate) mod files;
 mod metrics;
+mod mmdb_downloader;
 mod prom;
 mod stats;
 pub(crate) mod syslog_server;
@@ -67,12 +68,20 @@ pub async fn init() -> Result<(), anyhow::Error> {
         .await;
     }
 
-    // cache users  监控user表的变化 并同步缓存
+    if !CONFIG.common.mmdb_disable_download {
+        // Try to download the mmdb files, if its not disabled.
+        tokio::task::spawn(async move { mmdb_downloader::run().await });
+    }
+    // cache users
     tokio::task::spawn(async move { db::user::watch().await });
     // 只能监控增量数据 所以现在要先加载原始数据
     db::user::cache().await.expect("user cache failed");
 
-    //set instance id   从DB中查询实例id  没有的话产生一个并插入     整个集群看来是共享一个实例id的 第一个节点设置后 后面的节点就能读取到了 也就不需要再产生和设置了
+    db::organization::cache()
+        .await
+        .expect("organization cache sync failed");
+
+    //set instance id
     let instance_id = match db::get_instance().await {
         Ok(Some(instance)) => instance,
         Ok(None) | Err(_) => {
@@ -109,6 +118,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
     tokio::task::spawn(async move { db::alerts::watch().await });
     // 监听触发器
     tokio::task::spawn(async move { db::triggers::watch().await });
+    tokio::task::spawn(async move { db::organization::watch().await });
     tokio::task::yield_now().await; // yield let other tasks run
 
     // cache core metadata   现在从DB中加载数据并填充到缓存中
