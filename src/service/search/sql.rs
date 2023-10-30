@@ -316,8 +316,7 @@ impl Sql {
                 "".to_string()
             };
 
-
-            // 包含时间范围的情况 并且原本sql中没有时间范围
+            // 使用参数的时间条件 生成时间范围语句 并拼接在后面
             if !time_range_sql.is_empty() && meta_time_range_is_empty {
                 match RE_TIMESTAMP_EMPTY.captures(origin_sql.as_str()) {
                     Some(caps) => {
@@ -559,7 +558,7 @@ impl Sql {
             None => "".to_string(),
         };
 
-        // 截取where的部分
+        // 获取where后面的部分
         if !where_str.is_empty() {
             let mut where_str_lower = where_str.to_lowercase();
             // where的部分 截至到这些关键字之前
