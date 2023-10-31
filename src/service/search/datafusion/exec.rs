@@ -73,7 +73,7 @@ pub async fn sql(
     rules: &HashMap<String, DataType>,   // 某些field需要转换成该类型
     sql: &Arc<Sql>,   // 本次处理的sql  其中还包含 agg_sql
     files: &[FileKey],  // 本次要读取的文件
-    file_type: FileType,  // 表示文件内容是 JSON/Parquet
+    file_type: FileType,  // 表示文件内容是 JSON/Parquet   wal是json格式  存储在ObjectStore上的是parquet
 ) -> Result<HashMap<String, Vec<RecordBatch>>> {
 
     // 文件为空 返回空结果
@@ -83,7 +83,7 @@ pub async fn sql(
 
     let start = std::time::Instant::now();
 
-    // 要基于一组文件数据作为一个虚拟表 tbl
+    // 在之前的sql改写中 目标表名已经变成tbl 基于该stream的数据文件生成虚拟表
     let mut ctx = register_table(session, schema.clone(), "tbl", files, file_type.clone()).await?;
 
     // register UDF   注册用户函数
@@ -408,7 +408,7 @@ async fn exec_query(
     Ok(batches)
 }
 
-// 表示执行的是一个简单的sql
+// 是一个简单sql 在fast_mode下进行查询
 async fn get_fast_mode_ctx(
     session: &SearchSession,
     schema: Arc<Schema>,
@@ -440,7 +440,7 @@ async fn get_fast_mode_ctx(
         storage_type: session.storage_type.clone(),
     };
 
-    // 产生表 并注册自定义函数
+    // 基于少数文件 重新注册table 这样可以减少数据的扫描量
     let mut ctx =
         register_table(&fast_session, schema.clone(), "tbl", &new_files, file_type).await?;
 
@@ -487,7 +487,7 @@ pub async fn merge(
 
     // let start = std::time::Instant::now();
 
-    // write temp file    将数据以parquet格式写入到内存中    schema 是最终合并后的schema
+    // write temp file    此时只是将数据写入tmp文件  还没有进行真正合并
     let (schema, work_dir) = merge_write_recordbatch(batches)?;
     // log::info!(
     //     "merge_write_recordbatch took {:.3} seconds.",
@@ -497,7 +497,7 @@ pub async fn merge(
         return Ok(vec![]);
     }
 
-    // rewrite sql
+    // rewrite sql  在合并前 需要改写sql
     let query_sql = match merge_rewrite_sql(sql, schema) {
         Ok(sql) => {
             if offset > 0
@@ -530,7 +530,7 @@ pub async fn merge(
         .with_file_extension(FileType::PARQUET.get_ext())
         .with_target_partitions(CONFIG.limit.cpu_num);
 
-    // 现在就是基于这组中间文件重新查询
+    // 现在就是基于这组中间结果集重新查询
     let list_url = format!("tmpfs://{work_dir}");
     let prefix = match ListingTableUrl::parse(list_url) {
         Ok(url) => url,
@@ -579,6 +579,7 @@ pub async fn merge(
         let mut merged_batch = batches[0].clone();
         for item in batches.iter().skip(1) {
             if item.num_rows() > 0 {
+                // 将结果平铺到一起   vec长度变为1
                 merged_batch =
                     arrow::compute::concat_batches(&schema.clone(), &[merged_batch, item.clone()])
                         .unwrap();
@@ -590,15 +591,16 @@ pub async fn merge(
 
     // log::info!("Merge took {:.3} seconds.", start.elapsed().as_secs_f64());
 
-    // clear temp file
+    // clear temp file  删除中间数据
     tmpfs::delete(&work_dir, true).unwrap();
 
     Ok(vec![batches])
 }
 
-// 这里只是将数据写入到内存中
+// 将数据集以parquet格式写入到内存中 (tmp文件就是内存)   并返回存储数据文件的目录
 fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>, String)> {
     let mut i = 0;
+    // 创建临时文件夹
     let work_dir = format!("/tmp/merge/{}/", chrono::Utc::now().timestamp_micros());
     let mut schema = Schema::empty();
 
@@ -607,15 +609,15 @@ fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>,
         if item.is_empty() {
             continue;
         }
-        // 处理每块行数据
+        // 处理每块数据集
         for row in item.iter() {
+            // 该块数据集为空
             if row.num_rows() == 0 {
                 continue;
             }
-            // 这里记录的是总行数
             i += 1;
 
-            // 获取该块行记录的 schema  因为合并过程中 这些记录的schema可能会不一样
+            // 获取这块记录的schema 因为不同数据块 schema可能会不同
             let row_schema = row.schema();
             let filtered_fields: Vec<Field> = row_schema
                 .fields()
@@ -623,11 +625,12 @@ fn merge_write_recordbatch(batches: &[Vec<RecordBatch>]) -> Result<(Arc<Schema>,
                 .filter(|field| field.data_type() != &DataType::Null)
                 .map(|arc_field| (**arc_field).clone())
                 .collect();
+            // 过滤掉空字段
             let row_schema = Arc::new(Schema::new(filtered_fields));
             // 不断的合并schema
             schema = Schema::try_merge(vec![schema.clone(), row_schema.as_ref().to_owned()])?;
 
-            // 这里没有真的产生文件
+            // 使用的还是内存
             let file_name = format!("{work_dir}{i}.parquet");
             let mut buf_parquet = Vec::new();
             let mut writer = ArrowWriter::try_new(&mut buf_parquet, row_schema.clone(), None)?;
@@ -1060,20 +1063,26 @@ pub fn create_session_config() -> SessionConfig {
         .with_information_schema(true)
 }
 
-// 产生一个转换parquet时使用的环境
+// 初始化 datafusion的运行时环境
 pub fn create_runtime_env() -> Result<RuntimeEnv> {
     let object_store_registry = DefaultObjectStoreRegistry::new();
 
+    // 本来datafusion只支持从ObjectStore下读取数据 这里创建FS并实现了OS特征
+
+    // 虽然叫memory 其实内部维护了3级缓存 第一级缓存在内存中 第二级缓存在file中 第三级保存在远端
     let memory = super::storage::memory::FS::new();
     let memory_url = url::Url::parse("memory:///").unwrap();
     object_store_registry.register_store(&memory_url, Arc::new(memory));
 
+    // 对应wal文件 之前在读取数据前 已经将他们存储到一个temp文件中了 (其实也就是bytes数据)
     let tmpfs = super::storage::tmpfs::Tmpfs::new();
     let tmpfs_url = url::Url::parse("tmpfs:///").unwrap();
     object_store_registry.register_store(&tmpfs_url, Arc::new(tmpfs));
 
     let rn_config =
         RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry));
+
+    // 代表datafusion缓存占用的内存
     let rn_config = if CONFIG.memory_cache.datafusion_max_size > 0 {
         let mem_pool = super::MemoryPoolType::from_str(&CONFIG.memory_cache.datafusion_memory_pool)
             .map_err(|e| {
@@ -1094,7 +1103,7 @@ pub fn create_runtime_env() -> Result<RuntimeEnv> {
     RuntimeEnv::new(rn_config)
 }
 
-// 准备使用datafusion的上下文
+// 在使用datafusion前 需要先生成上下文
 pub fn prepare_datafusion_context() -> Result<SessionContext, DataFusionError> {
     let runtime_env = create_runtime_env()?;
     let session_config = create_session_config();
@@ -1129,6 +1138,8 @@ pub async fn register_table(
     files: &[FileKey],  // 一组文件
     file_type: FileType,  // 描述文件的内容类型
 ) -> Result<SessionContext> {
+
+    // 准备好datafusion 上下文
     let ctx = prepare_datafusion_context()?;
     // Configure listing options   生成一个选项对象
     let listing_options = match file_type {

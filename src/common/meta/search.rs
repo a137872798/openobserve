@@ -22,7 +22,7 @@ use crate::service::search::datafusion::storage::StorageType;
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,   // 某次查询请求 + 使用的schema版本
-    // 描述存储类型   包含mem/fs/tmpfs
+    // 描述存储类型   包含mem/tmpfs
     pub storage_type: StorageType,
 }
 

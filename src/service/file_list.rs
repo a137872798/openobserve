@@ -33,6 +33,7 @@ use crate::common::{
 use crate::handler::grpc::cluster_rpc;
 use crate::service::{db, search::MetadataMap};
 
+// 查询某个时间范围对应的 file_list对象， 每个对象对应一个parquet文件 内部存储了数据
 pub async fn query(
     org_id: &str,
     stream_name: &str,
@@ -54,14 +55,16 @@ pub async fn query(
         .await;
     }
 
-    // cluster mode
+    // cluster mode  本地模式的话直接返回文件列表即可  集群模式则需要多个节点去检测
     let start: std::time::Instant = std::time::Instant::now();
+    // 找到所有还可以工作的查询节点
     let nodes = cluster::get_cached_online_querier_nodes().unwrap_or_default();
     if nodes.is_empty() {
         return Ok(Vec::new());
     }
     let mut tasks = Vec::with_capacity(3);
     // get first three nodes to check file list max id
+    // 选择最前面的3个节点去检查
     for node in nodes.into_iter().take(3) {
         let org_id = org_id.to_string();
         let task = tokio::task::spawn(async move {
@@ -98,6 +101,7 @@ pub async fn query(
             let mut client = cluster_rpc::filelist_client::FilelistClient::with_interceptor(
                 channel,
                 move |mut req: Request<()>| {
+                    // 在发送的请求包前增加头部信息 token 和 org_id
                     req.metadata_mut().insert("authorization", token.clone());
                     req.metadata_mut()
                         .insert(CONFIG.grpc.org_header_key.as_str(), org_id.clone());
@@ -107,6 +111,8 @@ pub async fn query(
             client = client
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);
+
+            // 获取这些同步信息节点上最新的 file_list 记录id
             let response: cluster_rpc::MaxIdResponse = match client.max_id(request).await {
                 Ok(res) => res.into_inner(),
                 Err(err) => {
@@ -131,6 +137,8 @@ pub async fn query(
     let mut max_id: i64 = 0;
     let mut max_id_node: Option<cluster::Node> = None;
     let task_results = try_join_all(tasks).await?;
+
+    // 找到记录最大file_list 的节点
     for task in task_results {
         let res = task?;
         if res.1 > max_id {
@@ -143,7 +151,7 @@ pub async fn query(
     }
     let node = max_id_node.unwrap();
     if node.uuid.eq(cluster::LOCAL_NODE_UUID.as_str()) {
-        // local node, no need grpc call
+        // local node, no need grpc call   本节点是实时性最好的
         let files = query_inner(
             org_id,
             stream_name,
@@ -161,6 +169,7 @@ pub async fn query(
         return Ok(files);
     }
     // use the max_id node to query file_list
+    // 将查询请求发往目标节点
     let req = cluster_rpc::FileListQueryRequest {
         org_id: org_id.to_string(),
         stream_name: stream_name.to_string(),
@@ -235,7 +244,7 @@ pub async fn query(
     Ok(files)
 }
 
-// 查询某个流的文件列表
+//
 #[inline]
 async fn query_inner(
     org_id: &str,
@@ -246,7 +255,7 @@ async fn query_inner(
     time_max: i64,
 ) -> Result<Vec<FileKey>, anyhow::Error> {
 
-    // 一个DB查询
+    // 发起一次数据库查询 得到一组记录 每个记录对应一个数据文件
     let files = file_list::query(
         org_id,
         stream_type,
@@ -258,8 +267,8 @@ async fn query_inner(
     let mut file_keys = Vec::with_capacity(files.len());
     for file in files {
         file_keys.push(FileKey {
-            key: file.0,
-            meta: file.1,
+            key: file.0,  // key 是 stream+date+file
+            meta: file.1, // 存储其他信息
             deleted: false,  // 代表此时这些文件还没有被标记成删除
         });
     }

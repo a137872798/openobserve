@@ -74,8 +74,7 @@ pub async fn search(
     let sql1 = sql.clone();
     // TODO 链路追踪的先忽略
     let wal_span = info_span!("service:search:grpc:in_wal", org_id = sql.org_id,stream_name = sql.stream_name, stream_type = ?stream_type);
-    // 本节点如果是 摄取节点 也就是允许数据写入 那么数据很可能以wal文件的形式保存在本地
-    // 第一层先找到所有摄取节点 并读取wal日志
+    // 第一层 作为摄取节点 读取wal数据
     let task1 = tokio::task::spawn(
         async move {
             if cluster::is_ingester(&cluster::LOCAL_NODE_ROLE) {
@@ -87,7 +86,8 @@ pub async fn search(
         .instrument(wal_span),
     );
 
-    // search in object storage    第二层 作为querier节点 去ObjectStore查询数据
+    // search in object storage
+    // 第二层 作为querier节点 去ObjectStore查询数据
     let req_stype = req.stype;
     let session_id2 = session_id.clone();
     let sql2 = sql.clone();
@@ -98,7 +98,7 @@ pub async fn search(
 
     let task2 = tokio::task::spawn(
         async move {
-            // 如果本节点是摄取节点  就不需要查询storage数据了
+            // 如果本节点不是查询节点  就不需要查询storage数据了
             if req_stype == cluster_rpc::SearchType::WalOnly as i32 {
                 Ok((HashMap::new(), ScanStats::default()))
             } else {
@@ -152,7 +152,7 @@ pub async fn search(
     // merge all batches    此时已经合并了结果集
     let (offset, limit) = (0, sql.meta.offset + sql.meta.limit);
 
-    // 遍历每个key关联的数据集   key 可以对应一个sql
+    // 每个key关联一个sql的查询结果
     for (name, batches) in results.iter_mut() {
 
         // 找到原始sql
@@ -179,18 +179,19 @@ pub async fn search(
             };
     }
 
-    // clear session data
+    // clear session data  因为本次查询会话已结束 清除id
     datafusion::storage::file_list::clear(&session_id);
 
     // final result
     let mut hits_buf = Vec::new();
 
-    // 这是中间结果集
+    // 得到合并后的结果
     let result_query = results.get("query").cloned().unwrap_or_default();
 
     // 合并后 只要[0] 就可以了
     if !result_query.is_empty() && !result_query[0].is_empty() {
         let schema = result_query[0][0].schema();
+        // 这个是有关序列化的
         let ipc_options = ipc::writer::IpcWriteOptions::default();
         let ipc_options = ipc_options
             .try_with_compression(Some(ipc::CompressionType::ZSTD))

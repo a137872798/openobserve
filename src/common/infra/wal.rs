@@ -88,6 +88,7 @@ pub async fn check_in_use(stream: StreamParams, file_name: &str) -> bool {
     MANAGER.check_in_use(stream, file_name).await
 }
 
+// 查询缓存在内存中的数据
 pub async fn get_search_in_memory_files(
     org_id: &str,
     stream_name: &str,

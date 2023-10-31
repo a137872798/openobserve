@@ -28,6 +28,8 @@ pub struct Filelister;
 
 #[tonic::async_trait]
 impl Filelist for Filelister {
+
+    // 对应获取 file_list 信息的grpc请求   传入的是一个空的请求体
     async fn max_id(&self, req: Request<EmptyRequest>) -> Result<Response<MaxIdResponse>, Status> {
         let start = std::time::Instant::now();
         let parent_cx = global::get_text_map_propagator(|prop| {
@@ -35,6 +37,7 @@ impl Filelist for Filelister {
         });
         tracing::Span::current().set_parent(parent_cx);
 
+        // 获取同步到该库的file_list记录的最大id
         let max_id = infra_file_list::get_max_pk_value()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -51,6 +54,7 @@ impl Filelist for Filelister {
         Ok(Response::new(MaxIdResponse { max_id }))
     }
 
+    // 查询该节点的file_list 信息
     async fn query(
         &self,
         req: Request<FileListQueryRequest>,

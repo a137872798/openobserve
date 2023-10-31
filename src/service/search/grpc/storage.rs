@@ -151,7 +151,7 @@ pub async fn search(
         scan_stats.compressed_size
     );
 
-    // load files to local cache
+    // load files to local cache  从ObjectStore加载parquet文件 并缓存起来  目前有内存缓存和本地磁盘缓存 2种
     let (cache_type, deleted_files) = cache_parquet_files(&files, &scan_stats).await?;
     if !deleted_files.is_empty() {
         // remove deleted files from files_group
@@ -181,7 +181,7 @@ pub async fn search(
             id: format!("{session_id}-{ver}"),
             storage_type: StorageType::Memory,
         };
-        // cacluate the diff between latest schema and group schema   记录同名不同类型的field
+        // calculate the diff between latest schema and group schema   记录同名不同类型的field
         let mut diff_fields = HashMap::new();
         if CONFIG.common.widening_schema_evolution && ver != schema_latest_id {
             let group_fields = schema.fields();
@@ -273,7 +273,7 @@ async fn get_file_list(
     Ok(files)
 }
 
-// 从storage查询parquet文件
+// 从storage查询parquet文件  并缓存在本地
 #[tracing::instrument(name = "service:search:grpc:storage:cache_parquet_files", skip_all)]
 async fn cache_parquet_files(
     files: &[FileKey],
@@ -284,6 +284,7 @@ async fn cache_parquet_files(
     {
         // if scan_compressed_size < 80% of total memory cache, use memory cache
         file_data::CacheType::Memory
+        // 除了内存缓存 还有磁盘缓存 速度上相比从ObjectStore还是有优势的
     } else if !is_local_disk_storage()
         && CONFIG.disk_cache.enabled
         && scan_stats.compressed_size < CONFIG.disk_cache.skip_size as i64

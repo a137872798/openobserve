@@ -23,7 +23,7 @@ use crate::common::infra::{
     metrics, storage,
 };
 
-// 数据文件
+// 内存文件
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
 static DATA: Lazy<RwHashMap<String, Bytes>> = Lazy::new(Default::default);
 

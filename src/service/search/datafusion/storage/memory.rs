@@ -44,6 +44,7 @@ impl FS {
         path.into()
     }
 
+    // 尝试从缓存加载全部数据
     async fn get_cache(&self, location: &Path, range: Option<Range<usize>>) -> Option<Bytes> {
         let path = location.to_string();
         let data = file_data::memory::get(&path, range).await;
@@ -62,8 +63,12 @@ impl std::fmt::Display for FS {
 #[async_trait]
 impl ObjectStore for FS {
 
+    // 代表通过path从ObjectStore中检索数据
     async fn get(&self, location: &Path) -> Result<GetResult> {
+        // 截取 /$$/ 后面的部分
         let location = &self.format_location(location);
+
+        // 先尝试从缓存获取 range为None 代表获取所有数据
         match self.get_cache(location, None).await {
             Some(data) => {
                 let meta = ObjectMeta {
@@ -84,8 +89,10 @@ impl ObjectStore for FS {
                     range,
                 })
             }
+            // 未加载到内存缓存 尝试从文件缓存加载
             None => match storage::LOCAL_CACHE.get(location).await {
                 Ok(data) => Ok(data),
+                // 本地文件也没有的情况下 去远端拉取数据
                 Err(_) => storage::DEFAULT.get(location).await,
             },
         }
@@ -114,6 +121,8 @@ impl ObjectStore for FS {
                     range,
                 })
             }
+
+            // 读取本地文件中的数据
             None => match storage::LOCAL_CACHE
                 .get_opts(
                     location,

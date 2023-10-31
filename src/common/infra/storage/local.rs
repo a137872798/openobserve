@@ -32,6 +32,7 @@ pub struct Local {
 impl Local {
     pub fn new(root_dir: &str) -> Self {
         Self {
+            // 将本地文件模拟成ObjectStore
             client: LimitStore::new(init_client(root_dir), CONCURRENT_REQUESTS),
         }
     }
@@ -122,6 +123,7 @@ impl ObjectStore for Local {
         Ok(result)
     }
 
+    // 从本地文件读取数据
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let start = std::time::Instant::now();
         let file = location.to_string();

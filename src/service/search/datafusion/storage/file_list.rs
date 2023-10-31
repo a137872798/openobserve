@@ -30,7 +30,7 @@ pub fn get(session_id: &str) -> Result<Vec<ObjectMeta>, anyhow::Error> {
     Ok(data.value().clone())
 }
 
-// 上面的反向操作
+// 初始化某个会话关联的所有数据文件
 pub async fn set(session_id: &str, files: &[FileKey]) {
     let mut values = Vec::with_capacity(files.len());
     for file in files {

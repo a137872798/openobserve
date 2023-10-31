@@ -151,7 +151,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     let locker = dist_lock::lock("search/cluster_queue", 0).await?;
     let took_wait = start.elapsed().as_millis() as usize;
 
-    // get nodes from cluster   获取当前集群可用的所有节点  如果数据是分散在各个节点 那么查询不就有缺数据的可能了吗?
+    // get nodes from cluster  当前查询节点和摄取节点
     let mut nodes = cluster::get_cached_online_query_nodes().unwrap();
     // sort nodes by node_id this will improve hit cache ratio
     nodes.sort_by_key(|x| x.id);
@@ -176,7 +176,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     let file_list = get_file_list(&meta, stream_type, partition_time_level).await;
     let file_num = file_list.len();
 
-    // 代表每个节点处理一部分
+    // 表示每个查询节点处理多少个文件
     let offset = if querier_num >= file_num {
         // 一个节点查询一个file_list
         1
@@ -203,9 +203,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
     let mut tasks = Vec::new();
     let mut offset_start: usize = 0;
 
-    // 遍历每个节点   包含摄取节点和查询节点  查询节点只负责 file_list的文件 (负载平分) 这样就可以读取到全部的file_list数据
-    // 而摄取节点则是可能包含了该stream插入的部分数据  全部的摄取节点加起来才是此时stream落入wal的全部数据 再加上 file_list的全部数据 才是完整的stream数据
-    // 不过wal数据什么时候到file_list呢
+    // 查询节点负责读取file_list 数据  摄取节点负责读取wal数据
     for (partition_no, node) in nodes.iter().cloned().enumerate() {
         let mut req = req.clone();
         let mut job = job.clone();
@@ -213,7 +211,6 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         job.partition = partition_no as i32;
         // 关联req
         req.job = Some(job);
-        // 设置请求类型为 wal      user类型查询就是要做请求负载  wal类型就是查询本地日志  cluster类型应该是要做请求转发
         req.stype = cluster_rpc::SearchType::WalOnly as i32;
 
         // 能参与查询的节点 可以是查询节点或者摄取节点
@@ -222,7 +219,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         // 查询节点需要借助file_list从 objectStore查询  摄取节点则是从本地wal日志文件中读取
         if is_querier {
 
-            // 外层遍历每个节点  内层每个节点直接推进offset
+            // 每个查询节点 查询 offset个数量的文件
             if offset_start < file_num {
                 // 因为该请求是从本节点转发出去的 所以是cluster
                 req.stype = cluster_rpc::SearchType::Cluster as i32;
@@ -234,6 +231,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                     .map(cluster_rpc::FileKey::from)
                     .collect();
                 offset_start += offset;
+                // file_list 已经被分配完 并且本节点不是摄取节点  就遍历下个节点
             } else if !cluster::is_ingester(&node.role) {
                 continue; // no need more querier
             }
@@ -355,9 +353,10 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
         scan_stats.add(&resp.scan_stats.as_ref().unwrap().into());
         // handle hits
         let value = batches.entry("query".to_string()).or_default();
+
+        // ipc 是一种类似序列化的东西 进行解码
         if !resp.hits.is_empty() {
             let buf = Cursor::new(resp.hits);
-            // ipc 是一种类似序列化的东西
             let reader = ipc::reader::FileReader::try_new(buf, None).unwrap();
             let batch = reader.into_iter().map(Result::unwrap).collect::<Vec<_>>();
             value.push(batch);
@@ -391,7 +390,7 @@ async fn search_in_cluster(req: cluster_rpc::SearchRequest) -> Result<search::Re
                 .clone()
         };
 
-        // 这里进行数据合并
+        // 针对各节点查到的数据 还要进行一次合并
         *batch = match datafusion::exec::merge(
             &sql.org_id,
             sql.meta.offset,

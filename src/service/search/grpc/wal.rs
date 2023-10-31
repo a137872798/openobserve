@@ -49,13 +49,13 @@ pub async fn search(
     stream_type: meta::StreamType,
     timeout: u64,
 ) -> super::SearchResult {
-    // get file list   根据stream_name/stream_type 和本次查询的时间范围 找到一组文件
+    // get file list   根据stream_name/stream_type 和本次查询的时间范围 找到符合条件的wal文件
     let mut files = get_file_list(&sql, stream_type).await?;
 
     // 统计本次扫描的内存大小和一些其他数据
     let mut scan_stats = ScanStats::new();
 
-    // cache files
+    // cache files  创建一个存储临时结果的目录
     let work_dir = session_id.to_string();
     for file in files.clone().iter() {
         // 将数据读取到内存中
@@ -67,8 +67,10 @@ pub async fn search(
                 let mut file_data = file_data;
                 // check json file is complete
                 if !file_data.ends_with(b"\n") {
+                    // 如果文件还未结束  最后行存储特殊信息
                     if let Ok(s) = String::from_utf8(file_data.clone()) {
                         if let Some(last_line) = s.lines().last() {
+                            // 出现预期外的数据 仅移除最后一行
                             if serde_json::from_str::<serde_json::Value>(last_line).is_err() {
                                 // remove last line
                                 file_data = file_data[..file_data.len() - last_line.len()].to_vec();
@@ -79,7 +81,7 @@ pub async fn search(
                 scan_stats.original_size += file_data.len() as i64;
                 let file_key = file.key.strip_prefix(&CONFIG.common.data_wal_dir).unwrap();
                 let file_name = format!("/{work_dir}/{file_key}");
-                // 存储到临时文件系统中
+                // 存储到临时目录下
                 tmpfs::set(&file_name, file_data.into()).expect("tmpfs set success");
             }
         }
@@ -168,7 +170,7 @@ pub async fn search(
                 return Err(Error::from(err));
             }
         };
-        // calulate schema diff   比较该schema与最新的schema的差别
+        // calculate schema diff   比较该schema与最新的schema的差别
         let mut diff_fields = HashMap::new();
         let group_fields = inferred_schema.fields();
 
